@@ -29,6 +29,28 @@ describe("classifyEvent", () => {
     });
   });
 
+  it("maps session.execution terminators to terminal and started to busy", () => {
+    // session.idle is deprecated and session.status is client-derived; the daemon's
+    // real completion signal is session.execution.* (opencode's own reducer derives
+    // session_status idle/busy from these exact events).
+    expect(classifyEvent(ev({ type: "session.execution.succeeded", data: { sessionID: "ses_d" } }))).toEqual({
+      kind: "terminal",
+      sessionID: "ses_d",
+    });
+    expect(classifyEvent(ev({ type: "session.execution.failed", data: { sessionID: "ses_d" } }))).toEqual({
+      kind: "terminal",
+      sessionID: "ses_d",
+    });
+    expect(classifyEvent(ev({ type: "session.execution.interrupted", data: { sessionID: "ses_d" } }))).toEqual({
+      kind: "terminal",
+      sessionID: "ses_d",
+    });
+    expect(classifyEvent(ev({ type: "session.execution.started", data: { sessionID: "ses_d" } }))).toEqual({
+      kind: "busy",
+      sessionID: "ses_d",
+    });
+  });
+
   it("maps session.status idle to terminal and busy to busy", () => {
     expect(classifyEvent(ev({ type: "session.status", data: { sessionID: "ses_c", status: { type: "idle" } } }))).toEqual({
       kind: "terminal",

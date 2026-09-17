@@ -20,6 +20,15 @@ export function classifyEvent(event: OpenCodeEvent): EventClass {
     case "session.idle":
     case "session.deleted":
       return { kind: "terminal", sessionID: event.data.sessionID };
+    case "session.execution.started":
+      return { kind: "busy", sessionID: event.data.sessionID };
+    case "session.execution.succeeded":
+    case "session.execution.failed":
+    case "session.execution.interrupted":
+      // The daemon's turn-lifecycle signal (session.idle is deprecated and
+      // session.status is client-derived): opencode's own app reducer derives
+      // session busy/idle from these exact events.
+      return { kind: "terminal", sessionID: event.data.sessionID };
     case "session.status":
       if (event.data.status.type === "idle") return { kind: "terminal", sessionID: event.data.sessionID };
       if (event.data.status.type === "busy") return { kind: "busy", sessionID: event.data.sessionID };

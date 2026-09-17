@@ -12,6 +12,10 @@ const idle = (sessionID: string): OpenCodeEvent =>
   ({ type: "session.idle", data: { sessionID } }) as unknown as OpenCodeEvent;
 const busy = (sessionID: string): OpenCodeEvent =>
   ({ type: "session.status", data: { sessionID, status: { type: "busy" } } }) as unknown as OpenCodeEvent;
+const execStarted = (sessionID: string): OpenCodeEvent =>
+  ({ type: "session.execution.started", data: { sessionID } }) as unknown as OpenCodeEvent;
+const execSucceeded = (sessionID: string): OpenCodeEvent =>
+  ({ type: "session.execution.succeeded", data: { sessionID } }) as unknown as OpenCodeEvent;
 
 const sessionInfo = (id: string, parentID: string): SessionInfo =>
   ({ id, parentID, projectID: "p", cost: {}, tokens: {}, time: { created: 1, updated: 1 }, location: { kind: "local", directory: "/x", project: "p" } }) as unknown as SessionInfo;
@@ -109,6 +113,31 @@ describe("createWatcher", () => {
     await w.tick(1e9);
     expect(tmux.kills).toEqual([]);
     await w.dispatch(idle("ses_c"));
+    await w.tick(2_000);
+    expect(tmux.kills).toEqual(["%8"]);
+  });
+
+  it("closes the pane when the session execution succeeds (the daemon's real completion signal)", async () => {
+    const tmux = makeTmux({ paneIds: ["%8"] });
+    const w = createWatcher(deps({ tmux }));
+    await w.dispatch(created("ses_c", "ses_p"));
+    await w.dispatch(execStarted("ses_c"));
+    await w.dispatch(execSucceeded("ses_c"));
+    await w.tick(1_999);
+    expect(tmux.kills).toEqual([]);
+    await w.tick(2_000);
+    expect(tmux.kills).toEqual(["%8"]);
+  });
+
+  it("a new execution after completion cancels the pending close (agent resumed)", async () => {
+    const tmux = makeTmux({ paneIds: ["%8"] });
+    const w = createWatcher(deps({ tmux }));
+    await w.dispatch(created("ses_c", "ses_p"));
+    await w.dispatch(execSucceeded("ses_c"));
+    await w.dispatch(execStarted("ses_c"));
+    await w.tick(1e9);
+    expect(tmux.kills).toEqual([]);
+    await w.dispatch(execSucceeded("ses_c"));
     await w.tick(2_000);
     expect(tmux.kills).toEqual(["%8"]);
   });
