@@ -52,10 +52,9 @@ export function createWatcher(deps: WatchDeps): Watcher {
     return result.paneId;
   };
 
-  /** Reserve, optionally pre-mark terminal (adopt), split, then open. */
-  const openTracked = async (sessionID: string, title: string, terminal: boolean): Promise<void> => {
+  /** Reserve and split a new pane for the session, then record the open phase. */
+  const openTracked = async (sessionID: string, title: string): Promise<void> => {
     if (!deps.tracker.reserve(sessionID)) return;
-    if (terminal) deps.tracker.markTerminal(sessionID, now());
     const paneId = await openPane(sessionID, title);
     if (paneId === null) {
       deps.tracker.remove(sessionID);
@@ -84,8 +83,12 @@ export function createWatcher(deps: WatchDeps): Watcher {
         const active = await deps.client.session.active();
         const children = await childSessions(deps.client, deps.parentID);
         for (const info of children) {
-          const running = info.id in active;
-          await openTracked(info.id, childTitle(info.title, info.id), !running);
+          // Only currently-executing children need a pane. Finished children
+          // from previous runs are skipped outright: opening one just to close
+          // it again flashed panes at startup (their panes were already closed
+          // when they completed).
+          if (!(info.id in active)) continue;
+          await openTracked(info.id, childTitle(info.title, info.id));
         }
         await applyTick(now());
       } catch (error) {
@@ -98,7 +101,7 @@ export function createWatcher(deps: WatchDeps): Watcher {
       if (cls.kind === "created") {
         if (cls.parentID === undefined) return;
         if (deps.parentID !== null && cls.parentID !== deps.parentID) return;
-        await openTracked(cls.sessionID, childTitle(cls.title, cls.slug), false);
+        await openTracked(cls.sessionID, childTitle(cls.title, cls.slug));
         return;
       }
       if (cls.kind === "terminal") {

@@ -142,8 +142,8 @@ describe("createWatcher", () => {
     expect(tmux.kills).toEqual(["%8"]);
   });
 
-  it("adopts existing children, closing already-finished ones immediately", async () => {
-    const tmux = makeTmux({ paneIds: ["%1", "%2"] });
+  it("adopts only currently-running children, skipping finished ones", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
     const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "auto" });
     const w = createWatcher(
       deps({
@@ -156,10 +156,26 @@ describe("createWatcher", () => {
       }),
     );
     await w.adopt();
-    expect(tmux.splits.map((s) => s.argv[2])).toEqual(["ses_running", "ses_done"]);
+    expect(tmux.splits.map((s) => s.argv[2])).toEqual(["ses_running"]);
     expect(tracker.snapshot().get("ses_running")).toEqual({ phase: "open", paneId: "%1", closeAt: null });
     expect(tracker.snapshot().get("ses_done")).toBeUndefined();
-    expect(tmux.kills).toEqual(["%2"]);
+    expect(tmux.kills).toEqual([]);
+  });
+
+  it("adopts nothing when no child sessions are running (no startup flash)", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const w = createWatcher(
+      deps({
+        tmux,
+        client: makeClient({
+          children: [sessionInfo("ses_done_a", "ses_p"), sessionInfo("ses_done_b", "ses_p")],
+          active: {},
+        }),
+      }),
+    );
+    await w.adopt();
+    expect(tmux.splits).toEqual([]);
+    expect(tmux.kills).toEqual([]);
   });
 
   it("logs and drops the state when the split fails", async () => {
