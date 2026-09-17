@@ -33,7 +33,7 @@ describe("tmuxAdapter", () => {
   });
 
   it("applies the named layout after every split, for every layout", async () => {
-    for (const layout of ["main-vertical", "main-horizontal", "tiled"] as const) {
+    for (const layout of ["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"] as const) {
       const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
       await tmuxAdapter(exec).splitPane({ targetPane: "%0", layout, argv: ["opencode"] });
       expect(calls).toEqual([

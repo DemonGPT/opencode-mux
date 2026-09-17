@@ -38,6 +38,12 @@ describe("parseConfText", () => {
     expect(() => parseConfText("layout = sideways\n")).toThrow(/invalid layout/);
   });
 
+  it("parses every supported layout (omo-slim parity)", () => {
+    for (const layout of ["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"]) {
+      expect(parseConfText(`layout = ${layout}\n`)).toEqual({ layout });
+    }
+  });
+
   it("throws on invalid close_panes", () => {
     expect(() => parseConfText("close_panes = sometimes\n")).toThrow(/invalid close_panes/);
   });

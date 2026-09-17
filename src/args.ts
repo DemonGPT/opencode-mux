@@ -9,7 +9,7 @@ export interface ParsedArgs {
   passThrough: string[];
 }
 
-const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled"]);
+const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"]);
 const CLOSE_MODES: ReadonlySet<string> = new Set(["auto", "keep"]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -50,7 +50,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case "--layout": {
         const v = value();
         if (v === null || !LAYOUTS.has(v)) {
-          throw new Error("opencode-mux: --layout requires main-vertical | main-horizontal | tiled");
+          throw new Error("opencode-mux: --layout requires main-vertical | main-horizontal | tiled | even-horizontal | even-vertical");
         }
         out.flags.layout = v as Layout;
         break;

@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
-export type Layout = "main-vertical" | "main-horizontal" | "tiled";
+export type Layout = "main-vertical" | "main-horizontal" | "tiled" | "even-horizontal" | "even-vertical";
 export type ClosePanes = "auto" | "keep";
 
 export interface MuxConfig {
@@ -43,7 +43,7 @@ export function defaultConfText(): string {
   ].join("\n");
 }
 
-const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled"]);
+const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"]);
 const CLOSE_MODES: ReadonlySet<string> = new Set(["auto", "keep"]);
 
 export function parseConfText(text: string): Partial<MuxConfig> {
@@ -63,7 +63,7 @@ export function parseConfText(text: string): Partial<MuxConfig> {
         if (LAYOUTS.has(value)) {
           out.layout = value as Layout;
         } else {
-          throw new Error(`opencode-mux: invalid layout "${value}" (expected main-vertical | main-horizontal | tiled)`);
+          throw new Error(`opencode-mux: invalid layout "${value}" (expected main-vertical | main-horizontal | tiled | even-horizontal | even-vertical)`);
         }
         break;
       case "close_panes":

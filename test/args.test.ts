@@ -40,6 +40,12 @@ describe("parseArgs", () => {
     expect(parseArgs(["--whatever"]).passThrough).toEqual(["--whatever"]);
   });
 
+  it("accepts every supported layout name (omo-slim parity)", () => {
+    for (const layout of ["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"]) {
+      expect(parseArgs(["--layout", layout]).flags.layout).toBe(layout);
+    }
+  });
+
   it("rejects invalid values", () => {
     expect(() => parseArgs(["--layout", "sideways"])).toThrow(/--layout/);
     expect(() => parseArgs(["--grace", "-1"])).toThrow(/--grace/);

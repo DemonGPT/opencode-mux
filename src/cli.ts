@@ -120,7 +120,7 @@ export function usageText(): string {
     "",
     "Mux options:",
     "  --config <path>       config file (default ~/.config/opencode-mux.conf)",
-    "  --layout <name>       pane layout: main-vertical | main-horizontal | tiled (default main-vertical)",
+    "  --layout <name>       pane layout: main-vertical | main-horizontal | tiled | even-horizontal | even-vertical (default main-vertical)",
     "  --close <mode>        pane lifecycle: auto | keep (default auto)",
     "  --grace <seconds>     close delay after a session finishes (default 1)",
     "  --parent <id>         only watch children of this session",
