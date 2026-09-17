@@ -6,6 +6,7 @@ import {
   buildWatcherArgv,
   flagsToArgv,
   main,
+  meetsServiceProtocol,
   parseMajorVersion,
   usageText,
   watchLogPath,
@@ -19,7 +20,7 @@ function fakeSpawn(results: Record<string, () => Partial<SpawnResult>> = {}) {
   const spawn: SpawnFn = (command, args, opts) => {
     calls.push({ command, args, opts });
     const hit = results[command];
-    const canned = hit ? hit() : command === "opencode" && args[0] === "--version" ? { stdout: "opencode v2.0.5" } : {};
+    const canned = hit ? hit() : command === "opencode" && args[0] === "--version" ? { stdout: "opencode v2.0.6" } : {};
     const done = Promise.resolve({ ok: true, code: 0, error: null, stdout: "", stderr: "", ...canned });
     return {
       pid: 1,
@@ -59,6 +60,15 @@ describe("parseMajorVersion", () => {
     expect(parseMajorVersion("opencode v2.0.5")).toBe(2);
     expect(parseMajorVersion("v1.8.0")).toBe(1);
     expect(parseMajorVersion("garbage")).toBeNull();
+  });
+});
+
+describe("meetsServiceProtocol", () => {
+  it("requires the /api/info service protocol introduced in 2.0.6 and fails closed on junk", () => {
+    const accepted = ["opencode v2.0.6", "opencode v2.0.7", "opencode v2.1.0", "v3.0.0"];
+    const refused = ["opencode v2.0.5", "opencode v2.0.0", "opencode v1.9.0", "opencode v2", "garbage", ""];
+    for (const version of accepted) expect(meetsServiceProtocol(version)).toBe(true);
+    for (const version of refused) expect(meetsServiceProtocol(version)).toBe(false);
   });
 });
 
@@ -130,6 +140,34 @@ describe("main", () => {
     try {
       expect(await main([], deps({ spawn }))).toBe(1);
       expect(err.mock.calls.join("")).toMatch(/opencode v2 is required/);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("errors with an upgrade hint when opencode predates the client service protocol (2.0.6)", async () => {
+    const { spawn, calls } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0.5" }) });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(await main([], deps({ spawn }))).toBe(1);
+      expect(err.mock.calls.join("")).toMatch(/2\.0\.6/);
+      expect(calls.map((c) => c.command)).toEqual(["tmux", "opencode"]);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("--mux-watch: refuses to connect when opencode is below the protocol floor", async () => {
+    const { spawn } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0.5" }) });
+    const connect = vi.fn(async () => ({ url: "http://127.0.0.1:1", client: {} as unknown as OpenCodeClient }));
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const code = await main(
+        ["--mux-watch"],
+        deps({ spawn, env: { TMUX: "/tmp/t,1,0", TMUX_PANE: "%0" }, connectServer: connect }),
+      );
+      expect(code).toBe(1);
+      expect(connect).not.toHaveBeenCalled();
     } finally {
       err.mockRestore();
     }

@@ -144,6 +144,22 @@ export function parseMajorVersion(version: string): number | null {
   return match === null ? null : Number(match[1]);
 }
 
+/**
+ * True when an opencode version speaks the client's service protocol (/api/info,
+ * introduced in 2.0.6). Older servers only expose /api/status, which the client's
+ * Service.ensure() treats as incompatible and stops — so the CLI refuses before
+ * connecting. Fails closed on unparseable input.
+ */
+export function meetsServiceProtocol(version: string): boolean {
+  const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  if (match === null) return false;
+  const major = Number(match[1]);
+  if (major > 2) return true;
+  if (major < 2) return false;
+  const minor = Number(match[2]);
+  return minor > 0 || Number(match[3]) >= 6;
+}
+
 /** Re-emits resolved CLI flags as mux argv (for the watcher child process). */
 export function flagsToArgv(flags: CliFlags): string[] {
   const argv: string[] = [];
@@ -266,6 +282,12 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
   if (parseMajorVersion(versionText) !== 2) {
     process.stderr.write(
       `opencode-mux: opencode v2 is required, found version "${versionText || "unknown"}".\nUpgrade it: https://opencode.ai/v2/docs/\n`,
+    );
+    return 1;
+  }
+  if (!meetsServiceProtocol(versionText)) {
+    process.stderr.write(
+      `opencode-mux: opencode "${versionText}" predates the client service protocol (needs >= 2.0.6); connecting would stop its running server.\nUpgrade it: https://opencode.ai/v2/docs/\n`,
     );
     return 1;
   }
