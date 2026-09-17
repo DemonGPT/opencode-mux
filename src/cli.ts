@@ -8,7 +8,7 @@ import { loadConfig } from "./config.js";
 import type { CliFlags, MuxConfig } from "./config.js";
 import { nodeExec } from "./exec.js";
 import { connectServer } from "./server.js";
-import type { ServerConnection } from "./server.js";
+import type { ConnectServerDeps, ServerConnection, ServiceGeneration } from "./server.js";
 import { currentPane, shellQuote, tmuxAdapter } from "./tmux.js";
 import { PaneTracker } from "./tracker.js";
 import { VERSION } from "./version.js";
@@ -108,7 +108,7 @@ export interface CliDeps {
   tmuxCommand?: string;
   cwd?: string;
   /** Injectable so the watcher path is unit-testable; defaults to the real server connection. */
-  connectServer?: () => Promise<ServerConnection>;
+  connectServer?: (deps?: ConnectServerDeps) => Promise<ServerConnection>;
 }
 
 export function usageText(): string {
@@ -145,19 +145,19 @@ export function parseMajorVersion(version: string): number | null {
 }
 
 /**
- * True when an opencode version speaks the client's service protocol (/api/info,
- * introduced in 2.0.6). Older servers only expose /api/status, which the client's
- * Service.ensure() treats as incompatible and stops — so the CLI refuses before
- * connecting. Fails closed on unparseable input.
+ * Maps an opencode version to the client protocol generation it speaks: 2.0.0–2.0.5
+ * serve GET /api/status (legacy), 2.0.6+ serve GET /api/info (new). Each client
+ * generation's Service.ensure() probes only its own endpoint and stops a mismatched
+ * registered server, so the binary's generation must select the matching client.
+ * Returns null for unsupported or unparseable versions.
  */
-export function meetsServiceProtocol(version: string): boolean {
+export function serviceGeneration(version: string): ServiceGeneration | null {
   const match = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
-  if (match === null) return false;
+  if (match === null) return null;
   const major = Number(match[1]);
-  if (major > 2) return true;
-  if (major < 2) return false;
+  if (major !== 2) return null;
   const minor = Number(match[2]);
-  return minor > 0 || Number(match[3]) >= 6;
+  return minor === 0 && Number(match[3]) < 6 ? "legacy" : "new";
 }
 
 /** Re-emits resolved CLI flags as mux argv (for the watcher child process). */
@@ -208,7 +208,7 @@ async function resolveConfig(parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promis
   return loadConfig({ path: parsed.configPath, flags: parsed.flags, env });
 }
 
-async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDeps): Promise<number> {
+async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDeps, generation: ServiceGeneration): Promise<number> {
   const targetPane = currentPane(env);
   if (targetPane === null) {
     process.stderr.write("opencode-mux: watcher requires TMUX_PANE (run inside tmux)\n");
@@ -224,7 +224,7 @@ async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDep
       // log failures are non-fatal
     }
   };
-  const { client } = await (deps.connectServer ?? connectServer)();
+  const { client } = await (deps.connectServer ?? connectServer)({ generation });
   const tracker = new PaneTracker({ graceMs: config.graceSeconds * 1000, closePanes: config.closePanes });
   const watcher = createWatcher({
     client,
@@ -285,14 +285,15 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
     );
     return 1;
   }
-  if (!meetsServiceProtocol(versionText)) {
+  const generation = serviceGeneration(versionText);
+  if (generation === null) {
     process.stderr.write(
-      `opencode-mux: opencode "${versionText}" predates the client service protocol (needs >= 2.0.6); connecting would stop its running server.\nUpgrade it: https://opencode.ai/v2/docs/\n`,
+      `opencode-mux: unsupported opencode version "${versionText || "unknown"}" (expected a 2.x.y release).\nUpgrade it: https://opencode.ai/v2/docs/\n`,
     );
     return 1;
   }
 
-  if (parsed.watch) return runWatch(parsed, env, deps);
+  if (parsed.watch) return runWatch(parsed, env, deps, generation);
 
   const config = await resolveConfig(parsed, env);
   const insideTmux = env.TMUX !== undefined && env.TMUX !== "" && env.TMUX_PANE !== undefined && env.TMUX_PANE !== "";

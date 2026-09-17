@@ -6,8 +6,8 @@ import {
   buildWatcherArgv,
   flagsToArgv,
   main,
-  meetsServiceProtocol,
   parseMajorVersion,
+  serviceGeneration,
   usageText,
   watchLogPath,
 } from "../src/cli.js";
@@ -63,12 +63,14 @@ describe("parseMajorVersion", () => {
   });
 });
 
-describe("meetsServiceProtocol", () => {
-  it("requires the /api/info service protocol introduced in 2.0.6 and fails closed on junk", () => {
-    const accepted = ["opencode v2.0.6", "opencode v2.0.7", "opencode v2.1.0", "v3.0.0"];
-    const refused = ["opencode v2.0.5", "opencode v2.0.0", "opencode v1.9.0", "opencode v2", "garbage", ""];
-    for (const version of accepted) expect(meetsServiceProtocol(version)).toBe(true);
-    for (const version of refused) expect(meetsServiceProtocol(version)).toBe(false);
+describe("serviceGeneration", () => {
+  it("maps versions to the /api/status (legacy) and /api/info (new) protocol lines", () => {
+    const legacy = ["opencode v2.0.0", "opencode v2.0.4", "opencode v2.0.5"];
+    const modern = ["opencode v2.0.6", "opencode v2.0.7", "opencode v2.1.0"];
+    const unsupported = ["opencode v1.9.0", "v3.0.0", "opencode v2", "garbage", ""];
+    for (const version of legacy) expect(serviceGeneration(version)).toBe("legacy");
+    for (const version of modern) expect(serviceGeneration(version)).toBe("new");
+    for (const version of unsupported) expect(serviceGeneration(version)).toBeNull();
   });
 });
 
@@ -145,20 +147,20 @@ describe("main", () => {
     }
   });
 
-  it("errors with an upgrade hint when opencode predates the client service protocol (2.0.6)", async () => {
-    const { spawn, calls } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0.5" }) });
+  it("errors with a hint and no extra spawns when the opencode version is unsupported", async () => {
+    const { spawn, calls } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0" }) });
     const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       expect(await main([], deps({ spawn }))).toBe(1);
-      expect(err.mock.calls.join("")).toMatch(/2\.0\.6/);
+      expect(err.mock.calls.join("")).toMatch(/unsupported opencode version/);
       expect(calls.map((c) => c.command)).toEqual(["tmux", "opencode"]);
     } finally {
       err.mockRestore();
     }
   });
 
-  it("--mux-watch: refuses to connect when opencode is below the protocol floor", async () => {
-    const { spawn } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0.5" }) });
+  it("--mux-watch: refuses to connect when the opencode version is unsupported", async () => {
+    const { spawn } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0" }) });
     const connect = vi.fn(async () => ({ url: "http://127.0.0.1:1", client: {} as unknown as OpenCodeClient }));
     const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
@@ -247,5 +249,33 @@ describe("main", () => {
     );
     expect(code).toBe(0);
     expect(connect).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledWith({ generation: "new" });
+  });
+
+  it("--mux-watch: threads the legacy generation for opencode 2.0.5", async () => {
+    const { spawn } = fakeSpawn({ opencode: () => ({ stdout: "opencode v2.0.5" }) });
+    const firstEvent = { type: "server.connected", data: {} } as unknown as OpenCodeEvent;
+    const client = {
+      session: {
+        active: async () => ({}),
+        list: async () => ({ data: [] }),
+      },
+      event: {
+        subscribe: async function* () {
+          yield firstEvent;
+        },
+      },
+    } as unknown as OpenCodeClient;
+    const connect = vi.fn(async () => ({ url: "http://127.0.0.1:1", client }));
+    const code = await main(
+      ["--mux-watch"],
+      deps({
+        spawn,
+        env: { TMUX: "/tmp/t,1,0", TMUX_PANE: "%0", XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux-legacy" },
+        connectServer: connect,
+      }),
+    );
+    expect(code).toBe(0);
+    expect(connect).toHaveBeenCalledWith({ generation: "legacy" });
   });
 });

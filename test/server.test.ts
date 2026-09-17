@@ -35,6 +35,17 @@ describe("connectServer", () => {
     expect(typeof conn.client.session.list).toBe("function");
     expect(typeof conn.client.event.subscribe).toBe("function");
   });
+
+  it("builds the client from the legacy SDK line when generation is legacy", async () => {
+    const conn = await connectServer({
+      generation: "legacy",
+      ensure: async () => ({ url: "http://127.0.0.1:2" }),
+      headers: () => undefined,
+    });
+    expect(conn.url).toBe("http://127.0.0.1:2");
+    expect(typeof conn.client.session.list).toBe("function");
+    expect(typeof conn.client.event.subscribe).toBe("function");
+  });
 });
 
 describe("childSessions", () => {
