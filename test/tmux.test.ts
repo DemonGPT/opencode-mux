@@ -21,23 +21,26 @@ function capturingExec(overrides: Record<string, (args: string[]) => { stdout?: 
 }
 
 describe("tmuxAdapter", () => {
-  it("splits a pane with layout flags and pane argv", async () => {
+  it("splits a pane with pane argv and shapes the window via select-layout", async () => {
     const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
     const t = tmuxAdapter(exec);
     const r = await t.splitPane({ targetPane: "%0", layout: "main-vertical", argv: ["opencode", "-s", "ses_x"] });
     expect(r).toEqual({ ok: true, error: null, paneId: "%5" });
     expect(calls).toEqual([
-      { command: "tmux", args: ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "-h", "opencode", "-s", "ses_x"] },
+      { command: "tmux", args: ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode", "-s", "ses_x"] },
+      { command: "tmux", args: ["select-layout", "-t", "%0", "main-vertical"] },
     ]);
   });
 
-  it("maps main-horizontal to -v and tiled to no flag", async () => {
-    const a = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
-    await tmuxAdapter(a.exec).splitPane({ targetPane: "%0", layout: "main-horizontal", argv: ["opencode"] });
-    expect(a.calls[0]!.args).toEqual(["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "-v", "opencode"]);
-    const b = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
-    await tmuxAdapter(b.exec).splitPane({ targetPane: "%0", layout: "tiled", argv: ["opencode"] });
-    expect(b.calls[0]!.args).toEqual(["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"]);
+  it("applies the named layout after every split, for every layout", async () => {
+    for (const layout of ["main-vertical", "main-horizontal", "tiled"] as const) {
+      const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
+      await tmuxAdapter(exec).splitPane({ targetPane: "%0", layout, argv: ["opencode"] });
+      expect(calls).toEqual([
+        { command: "tmux", args: ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"] },
+        { command: "tmux", args: ["select-layout", "-t", "%0", layout] },
+      ]);
+    }
   });
 
   it("quotes argv items that the tmux shell join would mangle", async () => {
@@ -52,11 +55,12 @@ describe("tmuxAdapter", () => {
     expect(r).toEqual({ ok: false, error: "no server running", paneId: null });
   });
 
-  it("returns failure when the pane id is missing", async () => {
-    const { exec } = capturingExec({ tmux: () => ({ stdout: "" }) });
+  it("returns failure when the pane id is missing and skips select-layout", async () => {
+    const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "" }) });
     const r = await tmuxAdapter(exec).splitPane({ targetPane: "%0", layout: "tiled", argv: [] });
     expect(r.ok).toBe(false);
     expect(r.paneId).toBeNull();
+    expect(calls).toHaveLength(1);
   });
 
   it("kills a pane", async () => {

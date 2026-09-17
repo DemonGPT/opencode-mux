@@ -30,12 +30,6 @@ export function shellQuote(arg: string): string {
   return `'${arg.replaceAll("'", "'\\''")}'`;
 }
 
-const LAYOUT_FLAGS: Readonly<Record<Layout, readonly string[]>> = {
-  "main-vertical": ["-h"],
-  "main-horizontal": ["-v"],
-  tiled: [],
-};
-
 export function tmuxAdapter(exec: Exec): Tmux {
   return {
     async splitPane({ targetPane, layout, argv }) {
@@ -46,13 +40,19 @@ export function tmuxAdapter(exec: Exec): Tmux {
         "#{pane_id}",
         "-t",
         targetPane,
-        ...LAYOUT_FLAGS[layout],
         ...argv.map(shellQuote),
       ];
       const result = await exec.run("tmux", args);
       const raw = result.stdout.trim().split("\n")[0];
       const paneId = raw === undefined || raw === "" ? null : raw;
       const paneOk = paneId !== null && paneId !== "";
+      if (result.ok && paneOk) {
+        // Shape the whole window into the requested named layout (e.g. the main
+        // pane left with subagents stacked in a right column for main-vertical).
+        // tmux keeps re-arranging into this layout as panes are added or removed,
+        // so repeated splits no longer cascade or exhaust pane space.
+        await exec.run("tmux", ["select-layout", "-t", targetPane, layout]);
+      }
       return {
         ok: result.ok && paneOk,
         error: result.ok ? (paneOk ? null : "no pane id returned") : result.stderr.trim() || result.error || "tmux failed",
