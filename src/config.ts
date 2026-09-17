@@ -25,7 +25,7 @@ export const DEFAULT_CONFIG: MuxConfig = {
   sessionName: "mux",
   layout: "main-vertical",
   closePanes: "auto",
-  graceSeconds: 15,
+  graceSeconds: 1,
   parent: null,
 };
 

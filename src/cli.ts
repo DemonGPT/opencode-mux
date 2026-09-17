@@ -122,7 +122,7 @@ export function usageText(): string {
     "  --config <path>       config file (default ~/.config/opencode-mux.conf)",
     "  --layout <name>       pane layout: main-vertical | main-horizontal | tiled (default main-vertical)",
     "  --close <mode>        pane lifecycle: auto | keep (default auto)",
-    "  --grace <seconds>     close delay after a session finishes (default 15)",
+    "  --grace <seconds>     close delay after a session finishes (default 1)",
     "  --parent <id>         only watch children of this session",
     "  --session-name <name> tmux session name (default mux)",
     "  -h, --help            show this help and exit",
