@@ -1,0 +1,25 @@
+{
+  "name": "opencode-mux",
+  "version": "0.1.0",
+  "description": "Drop-in opencode wrapper that opens tmux panes for subagent sessions automatically",
+  "type": "module",
+  "bin": { "opencode-mux": "./dist/bin.js" },
+  "files": ["dist"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke": "tsx scripts/e2e-smoke.ts"
+  },
+  "dependencies": {
+    "@opencode/client": "^2.0.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  },
+  "license": "MIT"
+}
