@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DEFAULT_CONFIG, configPath, loadConfig, parseConfText } from "../src/config.ts";
+import { DEFAULT_CONFIG, configPath, defaultConfText, loadConfig, parseConfText } from "../src/config.ts";
 
 describe("parseConfText", () => {
   it("returns an empty partial for empty input", () => {
@@ -54,10 +54,32 @@ describe("configPath", () => {
   });
 });
 
+describe("defaultConfText", () => {
+  it("round-trips to DEFAULT_CONFIG", () => {
+    expect(parseConfText(defaultConfText())).toEqual(DEFAULT_CONFIG);
+  });
+});
+
 describe("loadConfig", () => {
-  it("returns defaults when the config file is missing", async () => {
-    const config = await loadConfig({ path: "/nonexistent/opencode-mux.conf", env: {} });
+  it("autocreates the default config file when missing", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "omux-"));
+    const path = join(dir, "opencode-mux.conf");
+    const config = await loadConfig({ path, env: {} });
     expect(config).toEqual(DEFAULT_CONFIG);
+    expect(parseConfText(await readFile(path, "utf8"))).toEqual(DEFAULT_CONFIG);
+  });
+
+  it("falls back to defaults when the config file cannot be created", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "omux-"));
+    const ro = join(dir, "ro");
+    await mkdir(ro);
+    await chmod(ro, 0o555); // read-only: mkdir succeeds, writeFile fails
+    try {
+      const config = await loadConfig({ path: join(ro, "opencode-mux.conf"), env: {} });
+      expect(config).toEqual(DEFAULT_CONFIG);
+    } finally {
+      await chmod(ro, 0o755);
+    }
   });
 
   it("merges file values, then flags on top", async () => {
@@ -75,7 +97,8 @@ describe("loadConfig", () => {
   });
 
   it("lets flags set parent to null explicitly", async () => {
-    const config = await loadConfig({ path: "/nonexistent/opencode-mux.conf", flags: { parent: null }, env: {} });
+    const dir = await mkdtemp(join(tmpdir(), "omux-"));
+    const config = await loadConfig({ path: join(dir, "opencode-mux.conf"), flags: { parent: null }, env: {} });
     expect(config.parent).toBeNull();
   });
 });

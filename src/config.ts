@@ -1,6 +1,6 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export type Layout = "main-vertical" | "main-horizontal" | "tiled";
 export type ClosePanes = "auto" | "keep";
@@ -28,6 +28,20 @@ export const DEFAULT_CONFIG: MuxConfig = {
   graceSeconds: 15,
   parent: null,
 };
+
+/** Serialized default config, written when the config file is missing. */
+export function defaultConfText(): string {
+  return [
+    "# opencode-mux configuration",
+    "# This file was created automatically with defaults.",
+    `session_name=${DEFAULT_CONFIG.sessionName}`,
+    `layout=${DEFAULT_CONFIG.layout}`,
+    `close_panes=${DEFAULT_CONFIG.closePanes}`,
+    `grace=${DEFAULT_CONFIG.graceSeconds}`,
+    `parent=${DEFAULT_CONFIG.parent ?? ""}`,
+    "",
+  ].join("\n");
+}
 
 const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled"]);
 const CLOSE_MODES: ReadonlySet<string> = new Set(["auto", "keep"]);
@@ -94,6 +108,14 @@ export async function loadConfig(opts: {
     fromFile = parseConfText(await readFile(path, "utf8"));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    // The config file is optional: create it with defaults when missing
+    // (best effort — a read-only environment still runs on defaults).
+    try {
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, defaultConfText(), "utf8");
+    } catch {
+      // ignore write failures
+    }
   }
   const flags = opts.flags ?? {};
   return {
