@@ -10,6 +10,7 @@ export interface MuxConfig {
   layout: Layout;
   closePanes: ClosePanes;
   graceSeconds: number;
+  mainPaneSize: number;
   parent: string | null;
 }
 
@@ -17,6 +18,7 @@ export interface CliFlags {
   layout?: Layout;
   closePanes?: ClosePanes;
   graceSeconds?: number;
+  mainPaneSize?: number;
   parent?: string | null;
   sessionName?: string;
 }
@@ -26,6 +28,7 @@ export const DEFAULT_CONFIG: MuxConfig = {
   layout: "main-vertical",
   closePanes: "auto",
   graceSeconds: 1,
+  mainPaneSize: 60,
   parent: null,
 };
 
@@ -36,6 +39,7 @@ export function defaultConfText(): string {
     "# This file was created automatically with defaults.",
     `session_name=${DEFAULT_CONFIG.sessionName}`,
     `layout=${DEFAULT_CONFIG.layout}`,
+    `main_pane_size=${DEFAULT_CONFIG.mainPaneSize}`,
     `close_panes=${DEFAULT_CONFIG.closePanes}`,
     `grace=${DEFAULT_CONFIG.graceSeconds}`,
     `parent=${DEFAULT_CONFIG.parent ?? ""}`,
@@ -73,6 +77,14 @@ export function parseConfText(text: string): Partial<MuxConfig> {
           throw new Error(`opencode-mux: invalid close_panes "${value}" (expected auto | keep)`);
         }
         break;
+      case "main_pane_size": {
+        const n = Number(value);
+        if (!Number.isFinite(n) || n < 20 || n > 80) {
+          throw new Error(`opencode-mux: invalid main_pane_size "${value}" (expected a number between 20 and 80)`);
+        }
+        out.mainPaneSize = Math.floor(n);
+        break;
+      }
       case "grace": {
         const n = Number(value);
         if (!Number.isFinite(n) || n < 0) {
@@ -123,6 +135,7 @@ export async function loadConfig(opts: {
     layout: flags.layout ?? fromFile.layout ?? DEFAULT_CONFIG.layout,
     closePanes: flags.closePanes ?? fromFile.closePanes ?? DEFAULT_CONFIG.closePanes,
     graceSeconds: flags.graceSeconds ?? fromFile.graceSeconds ?? DEFAULT_CONFIG.graceSeconds,
+    mainPaneSize: flags.mainPaneSize ?? fromFile.mainPaneSize ?? DEFAULT_CONFIG.mainPaneSize,
     parent: flags.parent !== undefined ? flags.parent : (fromFile.parent ?? DEFAULT_CONFIG.parent),
   };
 }

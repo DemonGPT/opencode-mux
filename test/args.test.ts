@@ -46,6 +46,14 @@ describe("parseArgs", () => {
     }
   });
 
+  it("parses --main-pane-size and rejects out-of-range values", () => {
+    expect(parseArgs(["--main-pane-size", "40"]).flags.mainPaneSize).toBe(40);
+    expect(parseArgs(["--main-pane-size=60"]).flags.mainPaneSize).toBe(60);
+    expect(() => parseArgs(["--main-pane-size", "300"])).toThrow(/--main-pane-size/);
+    expect(() => parseArgs(["--main-pane-size", "-1"])).toThrow(/--main-pane-size/);
+    expect(() => parseArgs(["--main-pane-size", "abc"])).toThrow(/--main-pane-size/);
+  });
+
   it("rejects invalid values", () => {
     expect(() => parseArgs(["--layout", "sideways"])).toThrow(/--layout/);
     expect(() => parseArgs(["--grace", "-1"])).toThrow(/--grace/);

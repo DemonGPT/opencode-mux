@@ -13,6 +13,7 @@ export interface WatchDeps {
   log: (line: string) => void;
   targetPane?: string;
   layout: Layout;
+  mainPaneSize?: number;
   parentID: string | null;
   paneArgv?: (sessionID: string) => string[];
   tickEveryMs: number;
@@ -43,7 +44,7 @@ export function createWatcher(deps: WatchDeps): Watcher {
 
   const openPane = async (sessionID: string, title: string): Promise<string | null> => {
     const argv = paneArgv(sessionID);
-    const result = await deps.tmux.splitPane({ targetPane, layout: deps.layout, argv });
+    const result = await deps.tmux.splitPane({ targetPane, layout: deps.layout, mainPaneSize: deps.mainPaneSize, argv });
     if (!result.ok || result.paneId === null) {
       log(`action failed: split-window ${argv.join(" ")} — ${result.error ?? "unknown error"}`);
       return null;

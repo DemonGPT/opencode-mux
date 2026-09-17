@@ -52,6 +52,16 @@ describe("parseConfText", () => {
     expect(() => parseConfText("grace = -3\n")).toThrow(/invalid grace/);
     expect(() => parseConfText("grace = abc\n")).toThrow(/invalid grace/);
   });
+
+  it("parses main_pane_size", () => {
+    expect(parseConfText("main_pane_size = 40\n")).toEqual({ mainPaneSize: 40 });
+  });
+
+  it("throws on invalid main_pane_size", () => {
+    expect(() => parseConfText("main_pane_size = 10\n")).toThrow(/invalid main_pane_size/);
+    expect(() => parseConfText("main_pane_size = 90\n")).toThrow(/invalid main_pane_size/);
+    expect(() => parseConfText("main_pane_size = abc\n")).toThrow(/invalid main_pane_size/);
+  });
 });
 
 describe("configPath", () => {
@@ -91,13 +101,14 @@ describe("loadConfig", () => {
   it("merges file values, then flags on top", async () => {
     const dir = await mkdtemp(join(tmpdir(), "omux-"));
     const path = join(dir, "opencode-mux.conf");
-    await writeFile(path, "layout = tiled\ngrace = 5\n");
+    await writeFile(path, "layout = tiled\nmain_pane_size = 40\ngrace = 5\n");
     const config = await loadConfig({ path, flags: { graceSeconds: 30, closePanes: "keep" }, env: {} });
     expect(config).toEqual({
       sessionName: "mux",
       layout: "tiled",
       closePanes: "keep",
       graceSeconds: 30,
+      mainPaneSize: 40,
       parent: null,
     });
   });

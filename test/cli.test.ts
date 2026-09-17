@@ -47,6 +47,15 @@ describe("usageText", () => {
   });
 });
 
+describe("flagsToArgv", () => {
+  it("re-emits resolved flags as mux argv", () => {
+    expect(flagsToArgv({ layout: "main-vertical", mainPaneSize: 60 })).toEqual([
+      "--layout", "main-vertical",
+      "--main-pane-size", "60",
+    ]);
+  });
+});
+
 describe("watchLogPath", () => {
   it("honours XDG_STATE_HOME and falls back to ~/.local/state", () => {
     expect(watchLogPath({ XDG_STATE_HOME: "/state" })).toBe("/state/opencode-mux/watch.log");

@@ -121,6 +121,7 @@ export function usageText(): string {
     "Mux options:",
     "  --config <path>       config file (default ~/.config/opencode-mux.conf)",
     "  --layout <name>       pane layout: main-vertical | main-horizontal | tiled | even-horizontal | even-vertical (default main-vertical)",
+    "  --main-pane-size <pct> main pane size for main-* layouts, percent of window (20-80, default 60)",
     "  --close <mode>        pane lifecycle: auto | keep (default auto)",
     "  --grace <seconds>     close delay after a session finishes (default 1)",
     "  --parent <id>         only watch children of this session",
@@ -164,6 +165,7 @@ export function serviceGeneration(version: string): ServiceGeneration | null {
 export function flagsToArgv(flags: CliFlags): string[] {
   const argv: string[] = [];
   if (flags.layout !== undefined) argv.push("--layout", flags.layout);
+  if (flags.mainPaneSize !== undefined) argv.push("--main-pane-size", String(flags.mainPaneSize));
   if (flags.closePanes !== undefined) argv.push("--close", flags.closePanes);
   if (flags.graceSeconds !== undefined) argv.push("--grace", String(flags.graceSeconds));
   if (flags.parent !== undefined) argv.push("--parent", flags.parent ?? "");
@@ -233,6 +235,7 @@ async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDep
     log: append,
     targetPane,
     layout: config.layout,
+    mainPaneSize: config.mainPaneSize,
     parentID: config.parent,
     paneArgv: defaultPaneArgv,
     tickEveryMs: 500,

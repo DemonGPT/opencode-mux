@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Exec } from "../src/exec.ts";
+import type { Layout } from "../src/config.ts";
 import { currentPane, shellQuote, tmuxAdapter } from "../src/tmux.ts";
 
 function capturingExec(overrides: Record<string, (args: string[]) => { stdout?: string; stderr?: string; ok?: boolean; error?: string | null }> = {}) {
@@ -61,6 +62,36 @@ describe("tmuxAdapter", () => {
     expect(r.ok).toBe(false);
     expect(r.paneId).toBeNull();
     expect(calls).toHaveLength(1);
+  });
+
+  it("sizes the main pane via window options, only for main-* layouts", async () => {
+    const run = async (layout: Layout, mainPaneSize: number | undefined) => {
+      const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
+      const r = await tmuxAdapter(exec).splitPane({ targetPane: "%0", layout, mainPaneSize, argv: ["opencode"] });
+      expect(r.ok).toBe(true);
+      return calls.map((c) => c.args);
+    };
+    const splitOnly = (layout: Layout) => [
+      ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
+      ["select-layout", "-t", "%0", layout],
+    ];
+    // main-* layouts set their window option (percent) then apply the plain
+    // preset layout; select-layout itself rejects "layout,size" suffixes.
+    expect(await run("main-vertical", 60)).toEqual([
+      ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
+      ["set-option", "-w", "-t", "%0", "main-pane-width", "60%"],
+      ["select-layout", "-t", "%0", "main-vertical"],
+    ]);
+    expect(await run("main-horizontal", 80)).toEqual([
+      ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
+      ["set-option", "-w", "-t", "%0", "main-pane-height", "80%"],
+      ["select-layout", "-t", "%0", "main-horizontal"],
+    ]);
+    // Non-main layouts have no main pane: no option set, plain layout.
+    expect(await run("tiled", 60)).toEqual(splitOnly("tiled"));
+    expect(await run("even-horizontal", 60)).toEqual(splitOnly("even-horizontal"));
+    // No size given: no option set, as before.
+    expect(await run("main-vertical", undefined)).toEqual(splitOnly("main-vertical"));
   });
 
   it("kills a pane", async () => {

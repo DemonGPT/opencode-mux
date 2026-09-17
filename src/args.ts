@@ -55,6 +55,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
         out.flags.layout = v as Layout;
         break;
       }
+      case "--main-pane-size": {
+        const v = value();
+        const n = v === null ? Number.NaN : Number(v);
+        if (!Number.isFinite(n) || n < 20 || n > 80) {
+          throw new Error("opencode-mux: --main-pane-size requires a number between 20 and 80");
+        }
+        out.flags.mainPaneSize = Math.floor(n);
+        break;
+      }
       case "--close": {
         const v = value();
         if (v === null || !CLOSE_MODES.has(v)) {

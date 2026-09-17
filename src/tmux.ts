@@ -4,6 +4,8 @@ import type { Exec } from "./exec.js";
 export interface TmuxSplitInput {
   targetPane: string;
   layout: Layout;
+  /** Main pane size in percent (20-80) for main-* layouts; other layouts ignore it. */
+  mainPaneSize?: number;
   argv: string[];
 }
 
@@ -32,7 +34,7 @@ export function shellQuote(arg: string): string {
 
 export function tmuxAdapter(exec: Exec): Tmux {
   return {
-    async splitPane({ targetPane, layout, argv }) {
+    async splitPane({ targetPane, layout, argv, mainPaneSize }) {
       const args = [
         "split-window",
         "-P",
@@ -51,6 +53,16 @@ export function tmuxAdapter(exec: Exec): Tmux {
         // pane left with subagents stacked in a right column for main-vertical).
         // tmux keeps re-arranging into this layout as panes are added or removed,
         // so repeated splits no longer cascade or exhaust pane space.
+        //
+        // main-* layouts size their main pane from the window options
+        // main-pane-width / main-pane-height, which accept a percentage.
+        // select-layout itself rejects a "layout,size" suffix ("invalid layout"),
+        // so set the matching option first, then apply the plain preset layout.
+        // Non-main layouts have no main pane and ignore the size entirely.
+        if (mainPaneSize !== undefined && layout.startsWith("main-")) {
+          const option = layout === "main-horizontal" ? "main-pane-height" : "main-pane-width";
+          await exec.run("tmux", ["set-option", "-w", "-t", targetPane, option, `${mainPaneSize}%`]);
+        }
         await exec.run("tmux", ["select-layout", "-t", targetPane, layout]);
       }
       return {
