@@ -14,13 +14,13 @@ import {
 import type { CliDeps, SpawnFn, SpawnHandle, SpawnResult } from "../src/cli.js";
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 
-function fakeSpawn(results: Record<string, () => Partial<SpawnResult>> = {}) {
+function fakeSpawn(results: Record<string, (args: string[]) => Partial<SpawnResult>> = {}) {
   const calls: Array<{ command: string; args: string[]; opts?: { stdoutFile?: string; stderrFile?: string; inherit?: boolean } }> = [];
   const killed: Array<{ command: string; args: string[] }> = [];
   const spawn: SpawnFn = (command, args, opts) => {
     calls.push({ command, args, opts });
     const hit = results[command];
-    const canned = hit ? hit() : command === "opencode" && args[0] === "--version" ? { stdout: "opencode v2.0.6" } : {};
+    const canned = hit ? hit(args) : command === "opencode" && args[0] === "--version" ? { stdout: "opencode v2.0.6" } : {};
     const done = Promise.resolve({ ok: true, code: 0, error: null, stdout: "", stderr: "", ...canned });
     return {
       pid: 1,
@@ -208,7 +208,7 @@ describe("main", () => {
     expect(calls.some((c) => c.command === "tmux" && c.args[0] === "kill-session")).toBe(true);
   });
 
-  it("outside tmux: creates a session and attaches", async () => {
+  it("outside tmux: creates a session, applies session options, and attaches", async () => {
     const { spawn, calls } = fakeSpawn();
     const code = await main(
       ["--layout", "tiled", "--foo"],
@@ -218,8 +218,24 @@ describe("main", () => {
     const tmuxCalls = calls.filter((c) => c.command === "tmux").map((c) => c.args);
     expect(tmuxCalls[1]!.slice(0, 8)).toEqual(["new-session", "-d", "-e", "MUX_OWNED_SESSION=1", "-s", "mux", "-c", "/x"]);
     expect(tmuxCalls[1]!.slice(8)).toEqual(["/x/dist/bin.js", "--layout", "tiled", "--foo"]);
-    expect(tmuxCalls[2]).toEqual(["attach", "-t", "mux"]);
-    expect(tmuxCalls[2] !== undefined).toBe(true);
+    expect(tmuxCalls[2]).toEqual(["set-option", "-t", "mux", "status", "off"]);
+    expect(tmuxCalls[3]).toEqual(["set-option", "-t", "mux", "mouse", "on"]);
+    expect(tmuxCalls[4]).toEqual(["attach", "-t", "mux"]);
+  });
+
+  it("outside tmux: a failing set-option is non-fatal and attach still runs", async () => {
+    const { spawn, calls } = fakeSpawn({
+      tmux: (args) => (args[0] === "set-option" ? { ok: false, stderr: "boom" } : {}),
+      opencode: () => ({ stdout: "opencode v2.0.6" }),
+    });
+    const code = await main(
+      [],
+      deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js" }),
+    );
+    expect(code).toBe(0);
+    const tmuxCalls = calls.filter((c) => c.command === "tmux").map((c) => c.args);
+    expect(tmuxCalls.some((a) => a[0] === "set-option")).toBe(true);
+    expect(tmuxCalls.at(-1)).toEqual(["attach", "-t", "mux"]);
   });
 
   it("--mux-watch outside tmux: exits 1 with the TMUX_PANE hint", async () => {

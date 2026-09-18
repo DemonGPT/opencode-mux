@@ -100,6 +100,49 @@ describe("tmuxAdapter", () => {
     expect(r).toEqual({ ok: true, error: null });
     expect(calls).toEqual([{ command: "tmux", args: ["kill-pane", "-t", "%5"] }]);
   });
+
+  it("applyBorderStyles sets both border styles with -w scoping on the target pane", async () => {
+    const { exec, calls } = capturingExec();
+    const r = await tmuxAdapter(exec).applyBorderStyles("%0", { inactive: "fg=colour235", active: "fg=green" });
+    expect(r).toEqual({ ok: true, error: null });
+    expect(calls).toEqual([
+      { command: "tmux", args: ["set-option", "-w", "-t", "%0", "pane-border-style", "fg=colour235"] },
+      { command: "tmux", args: ["set-option", "-w", "-t", "%0", "pane-active-border-style", "fg=green"] },
+    ]);
+  });
+
+  it("applyBorderStyles sets only the defined fields and skips undefined ones", async () => {
+    const { exec, calls } = capturingExec();
+    const r = await tmuxAdapter(exec).applyBorderStyles("%0", { active: "fg=blue" });
+    expect(r).toEqual({ ok: true, error: null });
+    expect(calls).toEqual([{ command: "tmux", args: ["set-option", "-w", "-t", "%0", "pane-active-border-style", "fg=blue"] }]);
+  });
+
+  it("applyBorderStyles does nothing when no styles are defined", async () => {
+    const { exec, calls } = capturingExec();
+    const r = await tmuxAdapter(exec).applyBorderStyles("%0", {});
+    expect(r).toEqual({ ok: true, error: null });
+    expect(calls).toEqual([]);
+  });
+
+  it("applyBorderStyles keeps going when one command fails and reports the first error", async () => {
+    const { exec, calls } = capturingExec({
+      tmux: (args) => (args.includes("pane-border-style") ? { ok: false, stderr: "bad style\n" } : {}),
+    });
+    const r = await tmuxAdapter(exec).applyBorderStyles("%0", { inactive: "fg=red", active: "fg=green" });
+    expect(r).toEqual({ ok: false, error: "bad style" });
+    expect(calls).toEqual([
+      { command: "tmux", args: ["set-option", "-w", "-t", "%0", "pane-border-style", "fg=red"] },
+      { command: "tmux", args: ["set-option", "-w", "-t", "%0", "pane-active-border-style", "fg=green"] },
+    ]);
+  });
+
+  it("applyBorderStyles uses -w scoping and never passes -g", async () => {
+    const { exec, calls } = capturingExec();
+    await tmuxAdapter(exec).applyBorderStyles("%0", { inactive: "a", active: "b" });
+    expect(calls).toHaveLength(2);
+    expect(calls.every((c) => c.args.includes("-w") && !c.args.includes("-g"))).toBe(true);
+  });
 });
 
 describe("shellQuote", () => {

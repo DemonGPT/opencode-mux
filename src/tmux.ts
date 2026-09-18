@@ -15,9 +15,21 @@ export interface TmuxResult {
   paneId: string | null;
 }
 
+export interface TmuxApplyResult {
+  ok: boolean;
+  error: string | null;
+}
+
+/** Window-scoped pane border styles, keyed by tmux option name. */
+export interface BorderStyles {
+  inactive?: string;
+  active?: string;
+}
+
 export interface Tmux {
   splitPane(input: TmuxSplitInput): Promise<TmuxResult>;
   killPane(paneId: string): Promise<{ ok: boolean; error: string | null }>;
+  applyBorderStyles(targetPane: string, styles: BorderStyles): Promise<TmuxApplyResult>;
 }
 
 /** Pane id from the environment, or null when not inside tmux. */
@@ -77,6 +89,29 @@ export function tmuxAdapter(exec: Exec): Tmux {
         ok: result.ok,
         error: result.ok ? null : result.stderr.trim() || result.error || "tmux failed",
       };
+    },
+    /**
+     * Applies border styles to the target pane's window via window options (-w,
+     * never the server-wide -g), so only that window is affected. Best-effort:
+     * each defined style is attempted sequentially; a failure does not stop the
+     * remaining styles and the first failure is reported.
+     */
+    async applyBorderStyles(targetPane, styles) {
+      const commands: Array<{ option: "pane-border-style" | "pane-active-border-style"; value: string }> = [];
+      if (styles.inactive !== undefined) commands.push({ option: "pane-border-style", value: styles.inactive });
+      if (styles.active !== undefined) commands.push({ option: "pane-active-border-style", value: styles.active });
+      let firstError: string | null = null;
+      try {
+        for (const { option, value } of commands) {
+          const result = await exec.run("tmux", ["set-option", "-w", "-t", targetPane, option, value]);
+          if (!result.ok && firstError === null) {
+            firstError = result.stderr.trim() || result.error || "tmux failed";
+          }
+        }
+      } catch (error) {
+        return { ok: false, error: firstError ?? String(error) };
+      }
+      return { ok: firstError === null, error: firstError };
     },
   };
 }

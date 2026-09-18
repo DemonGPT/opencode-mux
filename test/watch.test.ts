@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { OpenCodeClient, OpenCodeEvent, SessionInfo } from "@opencode/client";
 import { PaneTracker } from "../src/tracker.ts";
-import type { Tmux } from "../src/tmux.ts";
+import type { BorderStyles, Tmux, TmuxApplyResult } from "../src/tmux.ts";
 import { createWatcher, defaultPaneArgv } from "../src/watch.ts";
 
 const created = (sessionID: string, parentID: string, slug = "coder"): OpenCodeEvent =>
@@ -36,13 +36,15 @@ function makeClient(over: { active?: Record<string, { type: "running" }>; childr
   } as unknown as OpenCodeClient;
 }
 
-function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: string; layout: string; argv: string[] }>; kills?: string[] } = {}): Tmux & { splits: Array<{ targetPane: string; layout: string; argv: string[] }>; kills: string[] } {
+function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: string; layout: string; argv: string[] }>; kills?: string[]; borderStyles?: Array<{ targetPane: string; styles: BorderStyles }>; borderResult?: TmuxApplyResult } = {}): Tmux & { splits: Array<{ targetPane: string; layout: string; argv: string[] }>; kills: string[]; borderStyles: Array<{ targetPane: string; styles: BorderStyles }> } {
   const splits = over.splits ?? [];
   const kills = over.kills ?? [];
+  const borderStyles = over.borderStyles ?? [];
   let next = 0;
   return {
     splits,
     kills,
+    borderStyles,
     async splitPane(input) {
       splits.push(input);
       const paneId = over.paneIds?.[next++];
@@ -51,6 +53,10 @@ function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: strin
     async killPane(paneId) {
       kills.push(paneId);
       return { ok: true, error: null };
+    },
+    async applyBorderStyles(targetPane, styles) {
+      borderStyles.push({ targetPane, styles });
+      return over.borderResult ?? { ok: true, error: null };
     },
   };
 }
@@ -224,5 +230,33 @@ describe("createWatcher", () => {
     expect(tracker.snapshot().get("ses_c")).toEqual({ phase: "closing", paneId: "%8", closeAt: 2_000 });
     await w.tick(2_000);
     expect(tmux.kills).toEqual(["%8"]);
+  });
+
+  it("applies borders exactly once at start when provided", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const styles = { inactive: "fg=colour235", active: "fg=green" };
+    const w = createWatcher(deps({ tmux, borders: styles, tickEveryMs: 10_000 }));
+    const controller = new AbortController();
+    await w.start(controller.signal);
+    expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles }]);
+    expect(tmux.splits).toEqual([]);
+  });
+
+  it("makes zero styling calls when borders are omitted", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const w = createWatcher(deps({ tmux, tickEveryMs: 10_000 }));
+    const controller = new AbortController();
+    await w.start(controller.signal);
+    expect(tmux.borderStyles).toEqual([]);
+  });
+
+  it("logs a styling failure without failing the watcher", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"], borderResult: { ok: false, error: "boom" } });
+    const logs: string[] = [];
+    const w = createWatcher(deps({ tmux, log: (l) => logs.push(l), borders: { inactive: "fg=red" }, tickEveryMs: 10_000 }));
+    const controller = new AbortController();
+    await w.start(controller.signal);
+    expect(logs.join("\n")).toMatch(/styling failed: boom/);
+    expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles: { inactive: "fg=red" } }]);
   });
 });

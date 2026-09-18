@@ -3,7 +3,7 @@ import type { Layout } from "./config.js";
 import { childTitle, classifyEvent } from "./session.js";
 import { childSessions, events } from "./server.js";
 import type { PaneTracker, TrackerAction } from "./tracker.js";
-import type { Tmux } from "./tmux.js";
+import type { BorderStyles, Tmux } from "./tmux.js";
 import { currentPane } from "./tmux.js";
 
 export interface WatchDeps {
@@ -14,6 +14,8 @@ export interface WatchDeps {
   targetPane?: string;
   layout: Layout;
   mainPaneSize?: number;
+  /** Border styles applied once to the watcher's window at startup. */
+  borders?: BorderStyles;
   parentID: string | null;
   paneArgv?: (sessionID: string) => string[];
   tickEveryMs: number;
@@ -119,6 +121,10 @@ export function createWatcher(deps: WatchDeps): Watcher {
     },
 
     async start(signal) {
+      if (deps.borders !== undefined) {
+        const result = await deps.tmux.applyBorderStyles(targetPane, deps.borders);
+        if (!result.ok) log(`styling failed: ${result.error ?? "unknown error"}`);
+      }
       const timer = setInterval(() => void watcher.tick(now()), deps.tickEveryMs);
       timer.unref();
       signal.addEventListener("abort", () => clearInterval(timer), { once: true });

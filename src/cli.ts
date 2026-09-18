@@ -314,6 +314,11 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
       process.stderr.write(`opencode-mux: failed to start tmux session: ${created.error ?? "unknown error"}\n`);
       return 1;
     }
+    // Session-scoped appearance, so the mux looks coherent regardless of the
+    // user's global config. These touch only our own session — never -g.
+    // Failures are non-fatal: attach proceeds and the exit code is unchanged.
+    await deps.spawn(tmuxCommand, ["set-option", "-t", config.sessionName, "status", "off"]).done;
+    await deps.spawn(tmuxCommand, ["set-option", "-t", config.sessionName, "mouse", "on"]).done;
     const attached = await deps.spawn(tmuxCommand, ["attach", "-t", config.sessionName], { inherit: true }).done;
     return attached.ok ? 0 : attached.code ?? 1;
   }
