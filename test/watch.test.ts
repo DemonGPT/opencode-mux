@@ -154,6 +154,65 @@ describe("createWatcher", () => {
     expect(tmux.kills).toEqual(["%8"]);
   });
 
+  it("re-opens the pane when a closed session becomes busy again", async () => {
+    const tmux = makeTmux({ paneIds: ["%1", "%2"] });
+    const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "auto" });
+    const w = createWatcher(
+      deps({
+        tmux,
+        tracker,
+        now: () => 1_000,
+        client: makeClient({
+          children: [sessionInfo("ses_c", "ses_p")],
+          active: {},
+        }),
+      }),
+    );
+    await w.dispatch(created("ses_c", "ses_p"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tracker.snapshot().get("ses_c")).toEqual({ phase: "open", paneId: "%1", closeAt: null });
+
+    // Session finishes → pane closes after grace → tracker entry removed
+    await w.dispatch(execSucceeded("ses_c"));
+    await w.tick(2_000);
+    expect(tmux.kills).toEqual(["%1"]);
+    expect(tracker.snapshot().get("ses_c")).toBeUndefined();
+
+    // Session is busy again (reused) → pane re-opens even though tracker entry is gone
+    await w.dispatch(busy("ses_c"));
+    expect(tmux.splits).toHaveLength(2);
+    expect(tmux.splits[1]).toEqual({
+      targetPane: "%0",
+      layout: "main-vertical",
+      argv: ["opencode", "mini", "-s", "ses_c"],
+    });
+    expect(tracker.snapshot().get("ses_c")).toEqual({ phase: "open", paneId: "%2", closeAt: null });
+  });
+
+  it("does not reopen when a closed session becomes busy but is not a child", async () => {
+    const tmux = makeTmux({ paneIds: ["%1", "%2"] });
+    const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "auto" });
+    const w = createWatcher(
+      deps({
+        tmux,
+        tracker,
+        now: () => 1_000,
+        client: makeClient({
+          children: [sessionInfo("ses_other", "ses_p")],
+          active: {},
+        }),
+      }),
+    );
+    await w.dispatch(created("ses_c", "ses_p"));
+    await w.dispatch(execSucceeded("ses_c"));
+    await w.tick(2_000);
+    expect(tracker.snapshot().get("ses_c")).toBeUndefined();
+
+    await w.dispatch(busy("ses_c"));
+    expect(tmux.splits).toHaveLength(1); // no second split
+    expect(tracker.snapshot().get("ses_c")).toBeUndefined();
+  });
+
   it("adopts only currently-running children, skipping finished ones", async () => {
     const tmux = makeTmux({ paneIds: ["%1"] });
     const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "auto" });

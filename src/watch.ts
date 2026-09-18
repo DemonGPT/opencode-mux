@@ -83,6 +83,23 @@ export function createWatcher(deps: WatchDeps): Watcher {
     }
   };
 
+  /**
+   * Re-opens a pane for a session that was previously closed (removed from
+   * the tracker) but has become busy again — so active subagents always
+   * stay visible, regardless of whether they finished before.
+   */
+  const reopenBusyPane = async (sessionID: string): Promise<void> => {
+    try {
+      const children = await childSessions(deps.client, deps.parentID);
+      const info = children.find((c) => c.id === sessionID);
+      if (info === undefined) return;
+      if (deps.parentID !== null && info.parentID !== deps.parentID) return;
+      await openTracked(info.id, childTitle(info.title, info.id));
+    } catch {
+      // best-effort: cannot reopen without session info
+    }
+  };
+
   /** JSON of the styles last applied to the window (null when none/cleared). */
   let appliedThemeSig: string | null = null;
 
@@ -146,7 +163,11 @@ export function createWatcher(deps: WatchDeps): Watcher {
         return;
       }
       if (cls.kind === "busy") {
-        deps.tracker.markBusy(cls.sessionID);
+        if (deps.tracker.snapshot().has(cls.sessionID)) {
+          deps.tracker.markBusy(cls.sessionID);
+        } else {
+          await reopenBusyPane(cls.sessionID);
+        }
       }
     },
 
