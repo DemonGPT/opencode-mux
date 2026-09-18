@@ -1,5 +1,5 @@
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
-import type { Layout } from "./config.js";
+import type { Layout, PaneCommand } from "./config.js";
 import { childTitle, classifyEvent } from "./session.js";
 import { childSessions, events } from "./server.js";
 import type { PaneTracker, TrackerAction } from "./tracker.js";
@@ -33,8 +33,8 @@ export interface Watcher {
 }
 
 /** Pane command: attach the child session in the new pane via the minimal mini UI (no tab bar, no agent switcher). */
-export function defaultPaneArgv(sessionID: string): string[] {
-  return ["opencode", "mini", "-s", sessionID];
+export function defaultPaneArgv(sessionID: string, paneCommand: PaneCommand = "mini"): string[] {
+  return ["opencode", paneCommand, "-s", sessionID];
 }
 
 /** Wires server events → tracker state machine → tmux actions. */

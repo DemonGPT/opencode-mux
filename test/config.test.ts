@@ -15,12 +15,13 @@ describe("parseConfText", () => {
 
   it("parses all keys", () => {
     const out = parseConfText(
-      "session_name = duel\nlayout = tiled\nclose_panes = keep\ngrace = 42\nparent = ses_abc\n",
+      "session_name = duel\nlayout = tiled\nclose_panes = keep\npane_command = tui\ngrace = 42\nparent = ses_abc\n",
     );
     expect(out).toEqual({
       sessionName: "duel",
       layout: "tiled",
       closePanes: "keep",
+      paneCommand: "tui",
       graceSeconds: 42,
       parent: "ses_abc",
     });
@@ -46,6 +47,15 @@ describe("parseConfText", () => {
 
   it("throws on invalid close_panes", () => {
     expect(() => parseConfText("close_panes = sometimes\n")).toThrow(/invalid close_panes/);
+  });
+
+  it("parses pane_command", () => {
+    expect(parseConfText("pane_command = mini\n")).toEqual({ paneCommand: "mini" });
+    expect(parseConfText("pane_command = tui\n")).toEqual({ paneCommand: "tui" });
+  });
+
+  it("throws on invalid pane_command", () => {
+    expect(() => parseConfText("pane_command = nano\n")).toThrow(/invalid pane_command/);
   });
 
   it("throws on invalid grace", () => {
@@ -107,6 +117,7 @@ describe("loadConfig", () => {
       sessionName: "mux",
       layout: "tiled",
       closePanes: "keep",
+      paneCommand: "mini",
       graceSeconds: 30,
       mainPaneSize: 40,
       parent: null,

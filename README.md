@@ -9,8 +9,7 @@ matter what your tmux is configured to look like.
 
 When a session running inside opencode-mux spawns a subagent, a new tmux pane
 opens showing that session live. When the subagent finishes, the pane closes
-itself. The subagent panes run opencode's minimal `mini` frontend, so they show
-nothing but the conversation — no tab bar, no agent switcher.
+itself. The subagent panes use opencode's `mini` frontend by default (configurable via `--pane-command` or `pane_command` in the config file) — no tab bar, no agent switcher.
 
 ```
 ┌──────────────────────────────────────────┬──────────────┐
@@ -82,6 +81,7 @@ opencode-mux --layout tiled --model fast
 | `--layout <name>` | Pane layout: `main-vertical`, `main-horizontal`, `tiled`, `even-horizontal`, `even-vertical` | `main-vertical` |
 | `--main-pane-size <pct>` | Main pane size for `main-*` layouts, percent of the window | `60` |
 | `--close <mode>` | Pane lifecycle: `auto` (close when the subagent finishes) or `keep` | `auto` |
+| `--pane-command <cmd>` | Subagent pane frontend: `mini` (minimal UI) or `tui` (full TUI) | `mini` |
 | `--grace <seconds>` | Delay before a finished subagent's pane closes | `1` |
 | `--parent <id>` | Only spawn panes for children of this session | inferred from `-s`/`--session` |
 | `--session-name <name>` | Owned tmux session name (when starting outside tmux) | `mux` |
@@ -103,6 +103,7 @@ session_name=mux
 layout=main-vertical
 main_pane_size=60
 close_panes=auto
+pane_command=mini
 grace=1
 parent=
 ```

@@ -16,7 +16,7 @@ with Vitest. No runtime framework. Package ships only `dist/`
 | `src/cli.ts` | Orchestration: tmux/opencode version gates, session creation, owned-session cleanup, watcher spawn, `--mux-watch` path |
 | `src/args.ts` | Flag parsing: mux flags consumed, everything else passed through to opencode; `--mux-*` unknown flags error |
 | `src/config.ts` | `opencode-mux.conf` (XDG-aware) loading; auto-creates with defaults; precedence flags > file > defaults; unknown keys ignored |
-| `src/watch.ts` | Watcher: server events → pane lifecycle; `defaultPaneArgv` = `["opencode", "mini", "-s", sessionID]` |
+| `src/watch.ts` | Watcher: server events → pane lifecycle; `defaultPaneArgv(sessionID, paneCommand)` = `["opencode", <paneCommand>, "-s", sessionID]` (default `paneCommand` = `"mini"`) |
 | `src/tracker.ts` | `PaneTracker` state machine: open → closing (grace) → closed; `closePanes: auto\|keep` |
 | `src/tmux.ts` | Tmux adapter: split-window, kill-pane, window-scoped border styles (`-w`), `currentPane` from `TMUX_PANE` |
 | `src/theme.ts` | Theme resolution + mtime-cached provider (`createThemeStyles`) |

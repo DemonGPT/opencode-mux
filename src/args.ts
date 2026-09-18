@@ -1,4 +1,4 @@
-import type { ClosePanes, CliFlags, Layout } from "./config.js";
+import type { ClosePanes, CliFlags, Layout, PaneCommand } from "./config.js";
 
 export interface ParsedArgs {
   flags: CliFlags;
@@ -11,6 +11,7 @@ export interface ParsedArgs {
 
 const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"]);
 const CLOSE_MODES: ReadonlySet<string> = new Set(["auto", "keep"]);
+const PANE_COMMANDS: ReadonlySet<string> = new Set(["mini", "tui"]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
   const out: ParsedArgs = { flags: {}, help: false, version: false, watch: false, passThrough: [] };
@@ -70,6 +71,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
           throw new Error("opencode-mux: --close requires auto | keep");
         }
         out.flags.closePanes = v as ClosePanes;
+        break;
+      }
+      case "--pane-command": {
+        const v = value();
+        if (v === null || !PANE_COMMANDS.has(v)) {
+          throw new Error("opencode-mux: --pane-command requires mini | tui");
+        }
+        out.flags.paneCommand = v as PaneCommand;
         break;
       }
       case "--grace": {

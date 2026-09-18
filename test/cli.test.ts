@@ -54,6 +54,14 @@ describe("flagsToArgv", () => {
       "--main-pane-size", "60",
     ]);
   });
+
+  it("flagsToArgv includes pane-command", () => {
+    expect(flagsToArgv({ paneCommand: "tui" })).toEqual(["--pane-command", "tui"]);
+    expect(flagsToArgv({ layout: "tiled", paneCommand: "mini" })).toEqual([
+      "--layout", "tiled",
+      "--pane-command", "mini",
+    ]);
+  });
 });
 
 describe("watchLogPath", () => {

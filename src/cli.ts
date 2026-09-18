@@ -124,6 +124,7 @@ export function usageText(): string {
     "  --layout <name>       pane layout: main-vertical | main-horizontal | tiled | even-horizontal | even-vertical (default main-vertical)",
     "  --main-pane-size <pct> main pane size for main-* layouts, percent of window (20-80, default 60)",
     "  --close <mode>        pane lifecycle: auto | keep (default auto)",
+    "  --pane-command <cmd>  pane frontend: mini | tui (default mini)",
     "  --grace <seconds>     close delay after a session finishes (default 1)",
     "  --parent <id>         only watch children of this session",
     "  --session-name <name> tmux session name (default mux)",
@@ -168,6 +169,7 @@ export function flagsToArgv(flags: CliFlags): string[] {
   if (flags.layout !== undefined) argv.push("--layout", flags.layout);
   if (flags.mainPaneSize !== undefined) argv.push("--main-pane-size", String(flags.mainPaneSize));
   if (flags.closePanes !== undefined) argv.push("--close", flags.closePanes);
+  if (flags.paneCommand !== undefined) argv.push("--pane-command", flags.paneCommand);
   if (flags.graceSeconds !== undefined) argv.push("--grace", String(flags.graceSeconds));
   if (flags.parent !== undefined) argv.push("--parent", flags.parent ?? "");
   if (flags.sessionName !== undefined) argv.push("--session-name", flags.sessionName);
@@ -239,7 +241,7 @@ async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDep
     mainPaneSize: config.mainPaneSize,
     themeStyles: createThemeStyles({ env, cwd: deps.cwd ?? process.cwd() }),
     parentID: config.parent,
-    paneArgv: defaultPaneArgv,
+    paneArgv: (id) => defaultPaneArgv(id, config.paneCommand),
     tickEveryMs: 500,
   });
   const controller = new AbortController();

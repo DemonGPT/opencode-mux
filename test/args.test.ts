@@ -13,6 +13,7 @@ describe("parseArgs", () => {
       "--layout", "tiled",
       "--grace", "30",
       "--close", "keep",
+      "--pane-command", "mini",
       "--parent", "ses_p",
       "--session-name", "duel",
     ]);
@@ -20,6 +21,7 @@ describe("parseArgs", () => {
       layout: "tiled",
       graceSeconds: 30,
       closePanes: "keep",
+      paneCommand: "mini",
       parent: "ses_p",
       sessionName: "duel",
     });
@@ -46,6 +48,13 @@ describe("parseArgs", () => {
     }
   });
 
+  it("accepts every supported pane command", () => {
+    for (const cmd of ["mini", "tui"]) {
+      expect(parseArgs(["--pane-command", cmd]).flags.paneCommand).toBe(cmd);
+      expect(parseArgs(["--pane-command=" + cmd]).flags.paneCommand).toBe(cmd);
+    }
+  });
+
   it("parses --main-pane-size and rejects out-of-range values", () => {
     expect(parseArgs(["--main-pane-size", "40"]).flags.mainPaneSize).toBe(40);
     expect(parseArgs(["--main-pane-size=60"]).flags.mainPaneSize).toBe(60);
@@ -58,6 +67,7 @@ describe("parseArgs", () => {
     expect(() => parseArgs(["--layout", "sideways"])).toThrow(/--layout/);
     expect(() => parseArgs(["--grace", "-1"])).toThrow(/--grace/);
     expect(() => parseArgs(["--close", "sometimes"])).toThrow(/--close/);
+    expect(() => parseArgs(["--pane-command", "nano"])).toThrow(/--pane-command/);
     expect(() => parseArgs(["--grace"])).toThrow(/--grace/);
   });
 

@@ -4,11 +4,13 @@ import { dirname, join } from "node:path";
 
 export type Layout = "main-vertical" | "main-horizontal" | "tiled" | "even-horizontal" | "even-vertical";
 export type ClosePanes = "auto" | "keep";
+export type PaneCommand = "mini" | "tui";
 
 export interface MuxConfig {
   sessionName: string;
   layout: Layout;
   closePanes: ClosePanes;
+  paneCommand: PaneCommand;
   graceSeconds: number;
   mainPaneSize: number;
   parent: string | null;
@@ -17,6 +19,7 @@ export interface MuxConfig {
 export interface CliFlags {
   layout?: Layout;
   closePanes?: ClosePanes;
+  paneCommand?: PaneCommand;
   graceSeconds?: number;
   mainPaneSize?: number;
   parent?: string | null;
@@ -27,6 +30,7 @@ export const DEFAULT_CONFIG: MuxConfig = {
   sessionName: "mux",
   layout: "main-vertical",
   closePanes: "auto",
+  paneCommand: "mini",
   graceSeconds: 1,
   mainPaneSize: 60,
   parent: null,
@@ -41,6 +45,7 @@ export function defaultConfText(): string {
     `layout=${DEFAULT_CONFIG.layout}`,
     `main_pane_size=${DEFAULT_CONFIG.mainPaneSize}`,
     `close_panes=${DEFAULT_CONFIG.closePanes}`,
+    `pane_command=${DEFAULT_CONFIG.paneCommand}`,
     `grace=${DEFAULT_CONFIG.graceSeconds}`,
     `parent=${DEFAULT_CONFIG.parent ?? ""}`,
     "",
@@ -49,6 +54,7 @@ export function defaultConfText(): string {
 
 const LAYOUTS: ReadonlySet<string> = new Set(["main-vertical", "main-horizontal", "tiled", "even-horizontal", "even-vertical"]);
 const CLOSE_MODES: ReadonlySet<string> = new Set(["auto", "keep"]);
+const PANE_COMMANDS: ReadonlySet<string> = new Set(["mini", "tui"]);
 
 export function parseConfText(text: string): Partial<MuxConfig> {
   const out: Partial<MuxConfig> = {};
@@ -75,6 +81,13 @@ export function parseConfText(text: string): Partial<MuxConfig> {
           out.closePanes = value as ClosePanes;
         } else {
           throw new Error(`opencode-mux: invalid close_panes "${value}" (expected auto | keep)`);
+        }
+        break;
+      case "pane_command":
+        if (PANE_COMMANDS.has(value)) {
+          out.paneCommand = value as PaneCommand;
+        } else {
+          throw new Error(`opencode-mux: invalid pane_command "${value}" (expected mini | tui)`);
         }
         break;
       case "main_pane_size": {
@@ -134,6 +147,7 @@ export async function loadConfig(opts: {
     sessionName: flags.sessionName ?? fromFile.sessionName ?? DEFAULT_CONFIG.sessionName,
     layout: flags.layout ?? fromFile.layout ?? DEFAULT_CONFIG.layout,
     closePanes: flags.closePanes ?? fromFile.closePanes ?? DEFAULT_CONFIG.closePanes,
+    paneCommand: flags.paneCommand ?? fromFile.paneCommand ?? DEFAULT_CONFIG.paneCommand,
     graceSeconds: flags.graceSeconds ?? fromFile.graceSeconds ?? DEFAULT_CONFIG.graceSeconds,
     mainPaneSize: flags.mainPaneSize ?? fromFile.mainPaneSize ?? DEFAULT_CONFIG.mainPaneSize,
     parent: flags.parent !== undefined ? flags.parent : (fromFile.parent ?? DEFAULT_CONFIG.parent),
