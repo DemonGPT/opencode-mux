@@ -1,11 +1,17 @@
 {
   "name": "opencode-mux",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Drop-in opencode wrapper that opens tmux panes for subagent sessions automatically",
   "type": "module",
-  "bin": { "opencode-mux": "./dist/bin.js" },
-  "files": ["dist"],
-  "engines": { "node": ">=20" },
+  "bin": {
+    "opencode-mux": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit",
@@ -28,6 +34,15 @@
     "type": "git",
     "url": "https://github.com/DemonGPT/opencode-mux"
   },
-  "publishConfig": { "access": "public" },
-  "keywords": ["opencode", "tmux", "subagent", "multiplexer", "wrapper", "tui"]
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "opencode",
+    "tmux",
+    "subagent",
+    "multiplexer",
+    "wrapper",
+    "tui"
+  ]
 }
