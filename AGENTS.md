@@ -133,3 +133,7 @@ npm run build   # tsc -p tsconfig.build.json
 - Keep tests representative of the *new* pane command shape when touching
   pane argv (`["opencode", "mini", "-s", id]`; session id is `argv[3]`).
 - Error messages are prefixed `opencode-mux:` and reference stderr.
+- **Release flow**: `npm version <x.y.z>` (identity-env vars set) creates the
+  version commit + `v*` tag; push `main` and the tag — the tag push triggers
+  `.github/workflows/publish.yml`, which publishes to npm with provenance
+  (requires the `NPM_TOKEN` secret). Publish is not done manually.

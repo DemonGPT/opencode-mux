@@ -1,0 +1,36 @@
+name: Publish to npm
+
+# Publishes opencode-mux to the npm registry whenever a version tag (v*)
+# is pushed. Uses an npm automation token (bypasses 2FA/passkey prompts),
+# so releases are fully scriptable: `npm version patch` + `git push --tags`.
+#
+# Required GitHub secret: NPM_TOKEN — an npm "Automation" access token
+# scoped to the opencode-mux package (npmjs.com → Access Tokens → Generate
+# New Token → Automation).
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # for npm provenance (OIDC signature attached to the release)
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - run: npm ci
+
+      # prepublishOnly (check + test + build) runs automatically before publish.
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
