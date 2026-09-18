@@ -2,7 +2,7 @@
 
 ## Project
 
-**opencode-mux** (npm `opencode-mux`, v1.1.0, MIT): a drop-in wrapper for
+**opencode-mux** (npm `opencode-mux`, v1.1.1, MIT): a drop-in wrapper for
 opencode v2 that opens tmux panes for subagent sessions automatically.
 Node >= 20, TypeScript, ESM (`"type": "module"`), built with `tsc`, tested
 with Vitest. No runtime framework. Package ships only `dist/`

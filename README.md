@@ -48,7 +48,7 @@ To use it as your default `opencode`:
 alias opencode="opencode-mux"
 ```
 
-(binaries are `opencode-mux`, version `1.1.0`)
+(binaries are `opencode-mux`, version `1.1.1`)
 
 ## Usage
 
