@@ -135,5 +135,7 @@ npm run build   # tsc -p tsconfig.build.json
 - Error messages are prefixed `opencode-mux:` and reference stderr.
 - **Release flow**: `npm version <x.y.z>` (identity-env vars set) creates the
   version commit + `v*` tag; push `main` and the tag — the tag push triggers
-  `.github/workflows/publish.yml`, which publishes to npm with provenance
-  (requires the `NPM_TOKEN` secret). Publish is not done manually.
+  `.github/workflows/publish.yml`, which publishes to npm via **trusted
+  publishing** (OIDC, no tokens; provenance attached automatically). The npmjs.com
+  trusted publisher must reference exactly this workflow filename (`publish.yml`).
+  Publish is not done manually.

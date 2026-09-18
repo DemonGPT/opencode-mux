@@ -1,12 +1,15 @@
 name: Publish to npm
 
-# Publishes opencode-mux to the npm registry whenever a version tag (v*)
-# is pushed. Uses an npm automation token (bypasses 2FA/passkey prompts),
-# so releases are fully scriptable: `npm version patch` + `git push --tags`.
+# Publishes opencode-mux to the npm registry whenever a version tag (v*) is
+# pushed. Uses npm trusted publishing (OIDC) — no long-lived tokens. The
+# trusted publisher (GitHub user DemonGPT / repo opencode-mux / this
+# workflow filename) is linked in the package settings on npmjs.com
+# (Settings → Trusted publishing). A provenance attestation is attached
+# automatically on every publish.
 #
-# Required GitHub secret: NPM_TOKEN — an npm "Automation" access token
-# scoped to the opencode-mux package (npmjs.com → Access Tokens → Generate
-# New Token → Automation).
+# Release flow: `npm version <x.y.z>` (as the opencode identity) creates the
+# version commit + tag, then push main and the tag. That's it — no manual
+# npm publish, no passkeys, no tokens.
 
 on:
   push:
@@ -18,19 +21,18 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # for npm provenance (OIDC signature attached to the release)
+      id-token: write # npm trusted publishing: short-lived OIDC exchange, no token
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@v6
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-          cache: npm
+          package-manager-cache: false
 
       - run: npm ci
 
-      # prepublishOnly (check + test + build) runs automatically before publish.
-      - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # prepublishOnly (check + test + build) runs automatically before
+      # publish; the action fails the release if any gate is red.
+      - run: npm publish
