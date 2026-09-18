@@ -12,7 +12,7 @@ nothing but the conversation — no tab bar, no agent switcher.
 ```
 ┌──────────────────────────────────────────┬──────────────┐
 │                                          │ subagent     │
-│   main opencode session                  │ (mini UI)   │
+│   main opencode session                  │ (mini UI)    │
 │   (full TUI)                             ├──────────────┤
 │                                          │ subagent     │
 │                                          │ (mini UI)    │
