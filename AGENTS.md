@@ -124,6 +124,8 @@ npm run build   # tsc -p tsconfig.build.json
 
 ## Conventions
 
+- **Test gate**: no changes are committed or pushed unless `npm test` and
+  `npm run check` pass cleanly. Failing tests block commits.
 - Additive forward-compat: unknown config keys are ignored; unknown
   non-`--mux-` args pass through to opencode; unknown `--mux-*` flags are an
   error.
