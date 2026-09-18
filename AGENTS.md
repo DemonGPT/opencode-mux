@@ -28,6 +28,14 @@ with Vitest. No runtime framework. Package ships only `dist/`
 
 ## Non-negotiable invariants
 
+0. **Commit identity: agent commits use `opencode <opencode@agents.local>` —
+   NEVER the human's identity.** The repo has no local `user.name`/`user.email`
+   (the global config belongs to the human). Every agent-made commit MUST set
+   the author and committer explicitly, e.g.
+   `GIT_AUTHOR_NAME=opencode GIT_AUTHOR_EMAIL=opencode@agents.local GIT_COMMITTER_NAME=opencode GIT_COMMITTER_EMAIL=opencode@agents.local git commit ...`
+   The same applies to rebases/amends (env vars override config for the whole
+   command). Verify with `git log --format='%an <%ae>'` before pushing.
+
 1. **Never touch user config.** No tmux `-g` options, no writes to
    `~/.tmux.conf`, and no writes to opencode configs (`cli.json`, `tui.json`,
    `auth.json`, ...). Tmux writes are runtime-scoped only:
