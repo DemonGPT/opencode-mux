@@ -1,0 +1,29 @@
+name: CI
+
+# Runs the full test suite (type check + vitest) on every push and pull
+# request. The CD workflow (publish.yml) runs its own gates via
+# prepublishOnly before publishing; this one guards branches and PRs.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - run: npm ci
+
+      - run: npm run check
+
+      - run: npm test

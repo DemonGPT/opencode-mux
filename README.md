@@ -1,5 +1,8 @@
 # opencode-mux
 
+[![npm version](https://img.shields.io/npm/v/opencode-mux.svg)](https://www.npmjs.com/package/opencode-mux)
+[![CI](https://github.com/DemonGPT/opencode-mux/actions/workflows/ci.yml/badge.svg)](https://github.com/DemonGPT/opencode-mux/actions/workflows/ci.yml)
+
 A drop-in wrapper for [opencode](https://opencode.ai) that opens tmux panes for
 subagent sessions automatically — and makes the whole layout look coherent no
 matter what your tmux is configured to look like.
