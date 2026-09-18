@@ -1,6 +1,6 @@
 {
   "name": "opencode-mux",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Drop-in opencode wrapper that opens tmux panes for subagent sessions automatically",
   "type": "module",
   "bin": {
