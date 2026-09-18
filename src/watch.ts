@@ -14,8 +14,11 @@ export interface WatchDeps {
   targetPane?: string;
   layout: Layout;
   mainPaneSize?: number;
-  /** Border styles applied once to the watcher's window at startup. */
-  borders?: BorderStyles;
+  /**
+   * Resolves the active theme's border styles. Applied at start and re-applied
+   * on tick whenever the resolved styles change; null clears the styles.
+   */
+  themeStyles?: { current(): BorderStyles | null };
   parentID: string | null;
   paneArgv?: (sessionID: string) => string[];
   tickEveryMs: number;
@@ -80,6 +83,37 @@ export function createWatcher(deps: WatchDeps): Watcher {
     }
   };
 
+  /** JSON of the styles last applied to the window (null when none/cleared). */
+  let appliedThemeSig: string | null = null;
+
+  /**
+   * Applies the resolved theme's border styles, or clears them when the theme
+   * became null. No tmux calls when the provider is absent or unchanged;
+   * failures are logged at most once per change and never fail the watcher.
+   */
+  const syncTheme = async (): Promise<void> => {
+    if (deps.themeStyles === undefined) return;
+    let styles: BorderStyles | null;
+    let sig: string;
+    try {
+      styles = deps.themeStyles.current();
+      sig = JSON.stringify(styles);
+    } catch (error) {
+      log(`styling failed: ${String(error)}`);
+      appliedThemeSig = "error";
+      return;
+    }
+    if (sig === appliedThemeSig) return;
+    appliedThemeSig = sig;
+    if (styles === null) {
+      const result = await deps.tmux.clearBorderStyles(targetPane);
+      if (!result.ok) log(`styling failed: clear — ${result.error ?? "unknown error"}`);
+      return;
+    }
+    const result = await deps.tmux.applyBorderStyles(targetPane, styles);
+    if (!result.ok) log(`styling failed: ${result.error ?? "unknown error"}`);
+  };
+
   const watcher: Watcher = {
     async adopt() {
       try {
@@ -118,12 +152,23 @@ export function createWatcher(deps: WatchDeps): Watcher {
 
     async tick(nowMs) {
       await applyTick(nowMs);
+      await syncTheme();
     },
 
     async start(signal) {
-      if (deps.borders !== undefined) {
-        const result = await deps.tmux.applyBorderStyles(targetPane, deps.borders);
-        if (!result.ok) log(`styling failed: ${result.error ?? "unknown error"}`);
+      if (deps.themeStyles !== undefined) {
+        // Apply the initial value once, before the polling loop starts.
+        try {
+          const initial = deps.themeStyles.current();
+          appliedThemeSig = JSON.stringify(initial);
+          if (initial !== null) {
+            const result = await deps.tmux.applyBorderStyles(targetPane, initial);
+            if (!result.ok) log(`styling failed: ${result.error ?? "unknown error"}`);
+          }
+        } catch (error) {
+          log(`styling failed: ${String(error)}`);
+          appliedThemeSig = "error";
+        }
       }
       const timer = setInterval(() => void watcher.tick(now()), deps.tickEveryMs);
       timer.unref();

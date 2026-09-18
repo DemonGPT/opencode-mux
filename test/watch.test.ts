@@ -36,15 +36,17 @@ function makeClient(over: { active?: Record<string, { type: "running" }>; childr
   } as unknown as OpenCodeClient;
 }
 
-function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: string; layout: string; argv: string[] }>; kills?: string[]; borderStyles?: Array<{ targetPane: string; styles: BorderStyles }>; borderResult?: TmuxApplyResult } = {}): Tmux & { splits: Array<{ targetPane: string; layout: string; argv: string[] }>; kills: string[]; borderStyles: Array<{ targetPane: string; styles: BorderStyles }> } {
+function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: string; layout: string; argv: string[] }>; kills?: string[]; borderStyles?: Array<{ targetPane: string; styles: BorderStyles }>; clears?: string[]; borderResult?: TmuxApplyResult; clearResult?: TmuxApplyResult } = {}): Tmux & { splits: Array<{ targetPane: string; layout: string; argv: string[] }>; kills: string[]; borderStyles: Array<{ targetPane: string; styles: BorderStyles }>; clears: string[] } {
   const splits = over.splits ?? [];
   const kills = over.kills ?? [];
   const borderStyles = over.borderStyles ?? [];
+  const clears = over.clears ?? [];
   let next = 0;
   return {
     splits,
     kills,
     borderStyles,
+    clears,
     async splitPane(input) {
       splits.push(input);
       const paneId = over.paneIds?.[next++];
@@ -57,6 +59,10 @@ function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: strin
     async applyBorderStyles(targetPane, styles) {
       borderStyles.push({ targetPane, styles });
       return over.borderResult ?? { ok: true, error: null };
+    },
+    async clearBorderStyles(targetPane) {
+      clears.push(targetPane);
+      return over.clearResult ?? { ok: true, error: null };
     },
   };
 }
@@ -232,31 +238,87 @@ describe("createWatcher", () => {
     expect(tmux.kills).toEqual(["%8"]);
   });
 
-  it("applies borders exactly once at start when provided", async () => {
+  it("applies theme styles once at start when provided", async () => {
     const tmux = makeTmux({ paneIds: ["%1"] });
-    const styles = { inactive: "fg=colour235", active: "fg=green" };
-    const w = createWatcher(deps({ tmux, borders: styles, tickEveryMs: 10_000 }));
+    const styles = { inactive: "fg=#737aa2", active: "fg=#9099b2" };
+    const themeStyles = { current: () => styles };
+    const w = createWatcher(deps({ tmux, themeStyles, tickEveryMs: 10_000 }));
     const controller = new AbortController();
     await w.start(controller.signal);
     expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles }]);
+    expect(tmux.clears).toEqual([]);
     expect(tmux.splits).toEqual([]);
   });
 
-  it("makes zero styling calls when borders are omitted", async () => {
+  it("makes zero styling calls when themeStyles is absent", async () => {
     const tmux = makeTmux({ paneIds: ["%1"] });
     const w = createWatcher(deps({ tmux, tickEveryMs: 10_000 }));
     const controller = new AbortController();
     await w.start(controller.signal);
     expect(tmux.borderStyles).toEqual([]);
+    expect(tmux.clears).toEqual([]);
   });
 
-  it("logs a styling failure without failing the watcher", async () => {
+  it("re-applies styles only when the theme changes", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const a = { inactive: "fg=#111111", active: "fg=#222222" };
+    const b = { inactive: "fg=#333333", active: "fg=#444444" };
+    let current = a;
+    const themeStyles = { current: () => current };
+    const w = createWatcher(deps({ tmux, themeStyles, tickEveryMs: 10_000 }));
+    const controller = new AbortController();
+    await w.start(controller.signal);
+    expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles: a }]);
+    await w.tick(1_000);
+    expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles: a }]); // unchanged → no call
+    current = b;
+    await w.tick(2_000);
+    expect(tmux.borderStyles).toEqual([
+      { targetPane: "%0", styles: a },
+      { targetPane: "%0", styles: b },
+    ]);
+    await w.tick(3_000); // unchanged again → no further calls
+    expect(tmux.borderStyles).toHaveLength(2);
+    expect(tmux.clears).toEqual([]);
+  });
+
+  it("clears the border styles when the theme becomes null and re-applies on return", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const a = { inactive: "fg=#111111", active: "fg=#222222" };
+    let current: BorderStyles | null = a;
+    const themeStyles = { current: () => current };
+    const w = createWatcher(deps({ tmux, themeStyles, tickEveryMs: 10_000 }));
+    const controller = new AbortController();
+    await w.start(controller.signal);
+    expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles: a }]);
+    current = null;
+    await w.tick(2_000);
+    expect(tmux.clears).toEqual(["%0"]);
+    await w.tick(3_000);
+    expect(tmux.clears).toEqual(["%0"]); // still null → no repeat
+    current = a;
+    await w.tick(4_000);
+    expect(tmux.borderStyles).toEqual([
+      { targetPane: "%0", styles: a },
+      { targetPane: "%0", styles: a },
+    ]);
+  });
+
+  it("logs a styling failure without failing the watcher, at most once per change", async () => {
     const tmux = makeTmux({ paneIds: ["%1"], borderResult: { ok: false, error: "boom" } });
     const logs: string[] = [];
-    const w = createWatcher(deps({ tmux, log: (l) => logs.push(l), borders: { inactive: "fg=red" }, tickEveryMs: 10_000 }));
+    const a = { inactive: "fg=#111111" };
+    const b = { inactive: "fg=#222222" };
+    let current = a;
+    const w = createWatcher(deps({ tmux, log: (l) => logs.push(l), themeStyles: { current: () => current }, tickEveryMs: 10_000 }));
     const controller = new AbortController();
     await w.start(controller.signal);
     expect(logs.join("\n")).toMatch(/styling failed: boom/);
-    expect(tmux.borderStyles).toEqual([{ targetPane: "%0", styles: { inactive: "fg=red" } }]);
+    await w.tick(2_000);
+    await w.tick(3_000);
+    expect(logs.filter((l) => l.includes("styling failed: boom")).length).toBeLessThanOrEqual(1);
+    current = b;
+    await w.tick(4_000); // changed again → one more attempt (and one more log)
+    expect(logs.filter((l) => l.includes("styling failed: boom")).length).toBeLessThanOrEqual(2);
   });
 });

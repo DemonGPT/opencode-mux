@@ -10,6 +10,7 @@ import { nodeExec } from "./exec.js";
 import { connectServer } from "./server.js";
 import type { ConnectServerDeps, ServerConnection, ServiceGeneration } from "./server.js";
 import { currentPane, shellQuote, tmuxAdapter } from "./tmux.js";
+import { createThemeStyles } from "./theme.js";
 import { PaneTracker } from "./tracker.js";
 import { VERSION } from "./version.js";
 import { createWatcher, defaultPaneArgv } from "./watch.js";
@@ -236,6 +237,7 @@ async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDep
     targetPane,
     layout: config.layout,
     mainPaneSize: config.mainPaneSize,
+    themeStyles: createThemeStyles({ env, cwd: deps.cwd ?? process.cwd() }),
     parentID: config.parent,
     paneArgv: defaultPaneArgv,
     tickEveryMs: 500,

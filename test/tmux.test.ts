@@ -143,6 +143,31 @@ describe("tmuxAdapter", () => {
     expect(calls).toHaveLength(2);
     expect(calls.every((c) => c.args.includes("-w") && !c.args.includes("-g"))).toBe(true);
   });
+
+  it("clearBorderStyles unsets both border options with -w -u on the target pane", async () => {
+    const { exec, calls } = capturingExec();
+    const r = await tmuxAdapter(exec).clearBorderStyles("%0");
+    expect(r).toEqual({ ok: true, error: null });
+    expect(calls).toEqual([
+      { command: "tmux", args: ["set-option", "-w", "-u", "-t", "%0", "pane-border-style"] },
+      { command: "tmux", args: ["set-option", "-w", "-u", "-t", "%0", "pane-active-border-style"] },
+    ]);
+  });
+
+  it("clearBorderStyles is best-effort and reports the first error", async () => {
+    const { exec, calls } = capturingExec({
+      tmux: (args) => (args.includes("pane-border-style") ? { ok: false, stderr: "no server\n" } : {}),
+    });
+    const r = await tmuxAdapter(exec).clearBorderStyles("%0");
+    expect(r).toEqual({ ok: false, error: "no server" });
+    expect(calls).toHaveLength(2);
+  });
+
+  it("clearBorderStyles never passes -g", async () => {
+    const { exec, calls } = capturingExec();
+    await tmuxAdapter(exec).clearBorderStyles("%0");
+    expect(calls.every((c) => c.args.includes("-w") && c.args.includes("-u") && !c.args.includes("-g"))).toBe(true);
+  });
 });
 
 describe("shellQuote", () => {

@@ -30,6 +30,7 @@ export interface Tmux {
   splitPane(input: TmuxSplitInput): Promise<TmuxResult>;
   killPane(paneId: string): Promise<{ ok: boolean; error: string | null }>;
   applyBorderStyles(targetPane: string, styles: BorderStyles): Promise<TmuxApplyResult>;
+  clearBorderStyles(targetPane: string): Promise<TmuxApplyResult>;
 }
 
 /** Pane id from the environment, or null when not inside tmux. */
@@ -104,6 +105,27 @@ export function tmuxAdapter(exec: Exec): Tmux {
       try {
         for (const { option, value } of commands) {
           const result = await exec.run("tmux", ["set-option", "-w", "-t", targetPane, option, value]);
+          if (!result.ok && firstError === null) {
+            firstError = result.stderr.trim() || result.error || "tmux failed";
+          }
+        }
+      } catch (error) {
+        return { ok: false, error: firstError ?? String(error) };
+      }
+      return { ok: firstError === null, error: firstError };
+    },
+    /**
+     * Unsets the window's border style options (-w -u), restoring inherited
+     * defaults on the target pane's window only — never the server-wide -g.
+     * Best-effort: a failure does not stop the second unset and the first
+     * failure is reported.
+     */
+    async clearBorderStyles(targetPane) {
+      const options = ["pane-border-style", "pane-active-border-style"];
+      let firstError: string | null = null;
+      try {
+        for (const option of options) {
+          const result = await exec.run("tmux", ["set-option", "-w", "-u", "-t", targetPane, option]);
           if (!result.ok && firstError === null) {
             firstError = result.stderr.trim() || result.error || "tmux failed";
           }
