@@ -81,8 +81,8 @@ const deps = (over: Partial<Parameters<typeof createWatcher>[0]> = {}) => ({
 });
 
 describe("createWatcher", () => {
-  it("defaultPaneArgv builds the opencode attach command", () => {
-    expect(defaultPaneArgv("ses_c")).toEqual(["opencode", "-s", "ses_c"]);
+  it("defaultPaneArgv builds the opencode mini attach command", () => {
+    expect(defaultPaneArgv("ses_c")).toEqual(["opencode", "mini", "-s", "ses_c"]);
   });
 
   it("opens a pane for a matching created event and records the open phase", async () => {
@@ -90,7 +90,7 @@ describe("createWatcher", () => {
     const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "auto" });
     const w = createWatcher(deps({ tmux, tracker }));
     await w.dispatch(created("ses_c", "ses_p"));
-    expect(tmux.splits).toEqual([{ targetPane: "%0", layout: "main-vertical", argv: ["opencode", "-s", "ses_c"] }]);
+    expect(tmux.splits).toEqual([{ targetPane: "%0", layout: "main-vertical", argv: ["opencode", "mini", "-s", "ses_c"] }]);
     expect(tracker.snapshot().get("ses_c")).toEqual({ phase: "open", paneId: "%7", closeAt: null });
   });
 
@@ -168,7 +168,7 @@ describe("createWatcher", () => {
       }),
     );
     await w.adopt();
-    expect(tmux.splits.map((s) => s.argv[2])).toEqual(["ses_running"]);
+    expect(tmux.splits.map((s) => s.argv[3])).toEqual(["ses_running"]);
     expect(tracker.snapshot().get("ses_running")).toEqual({ phase: "open", paneId: "%1", closeAt: null });
     expect(tracker.snapshot().get("ses_done")).toBeUndefined();
     expect(tmux.kills).toEqual([]);

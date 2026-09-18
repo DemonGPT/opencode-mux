@@ -32,9 +32,9 @@ export interface Watcher {
   start(signal: AbortSignal): Promise<void>;
 }
 
-/** Pane command: attach the child session in the new pane. */
+/** Pane command: attach the child session in the new pane via the minimal mini UI (no tab bar, no agent switcher). */
 export function defaultPaneArgv(sessionID: string): string[] {
-  return ["opencode", "-s", sessionID];
+  return ["opencode", "mini", "-s", sessionID];
 }
 
 /** Wires server events → tracker state machine → tmux actions. */
