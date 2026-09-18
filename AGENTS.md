@@ -2,7 +2,7 @@
 
 ## Project
 
-**opencode-mux** (npm `opencode-mux`, v0.1.0, MIT): a drop-in wrapper for
+**opencode-mux** (npm `opencode-mux`, v1.1.0, MIT): a drop-in wrapper for
 opencode v2 that opens tmux panes for subagent sessions automatically.
 Node >= 20, TypeScript, ESM (`"type": "module"`), built with `tsc`, tested
 with Vitest. No runtime framework. Package ships only `dist/`
@@ -133,6 +133,7 @@ npm run build   # tsc -p tsconfig.build.json
 - Keep tests representative of the *new* pane command shape when touching
   pane argv (`["opencode", "mini", "-s", id]`; session id is `argv[3]`).
 - Error messages are prefixed `opencode-mux:` and reference stderr.
+- **Version variables**: on version bump, update both `src/version.ts` (`VERSION` constant) and the README version mention — these must always match `package.json` `version`. Forgetting either causes stale version reporting.
 - **Release flow**: `npm version <x.y.z>` (identity-env vars set) creates the
   version commit + `v*` tag; push `main` and the tag — the tag push triggers
   `.github/workflows/publish.yml`, which publishes to npm via **trusted
