@@ -11,6 +11,7 @@ import {
   usageText,
   watchLogPath,
 } from "../src/cli.js";
+import { VERSION } from "../src/version.js";
 import type { CliDeps, SpawnFn, SpawnHandle, SpawnResult } from "../src/cli.js";
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 
@@ -136,7 +137,7 @@ describe("main", () => {
     const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     try {
       expect(await main(["--version"], deps())).toBe(0);
-      expect(out).toHaveBeenCalledWith("opencode-mux 0.1.0\n");
+      expect(out).toHaveBeenCalledWith(`opencode-mux ${VERSION}\n`);
     } finally {
       out.mockRestore();
     }
