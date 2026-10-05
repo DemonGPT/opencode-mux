@@ -28,7 +28,7 @@ describe("tmuxAdapter", () => {
     const r = await t.splitPane({ targetPane: "%0", layout: "main-vertical", argv: ["opencode", "-s", "ses_x"] });
     expect(r).toEqual({ ok: true, error: null, paneId: "%5" });
     expect(calls).toEqual([
-      { command: "tmux", args: ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode", "-s", "ses_x"] },
+      { command: "tmux", args: ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode", "-s", "ses_x"] },
       { command: "tmux", args: ["select-layout", "-t", "%0", "main-vertical"] },
     ]);
   });
@@ -38,7 +38,7 @@ describe("tmuxAdapter", () => {
       const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
       await tmuxAdapter(exec).splitPane({ targetPane: "%0", layout, argv: ["opencode"] });
       expect(calls).toEqual([
-        { command: "tmux", args: ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"] },
+        { command: "tmux", args: ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"] },
         { command: "tmux", args: ["select-layout", "-t", "%0", layout] },
       ]);
     }
@@ -47,7 +47,7 @@ describe("tmuxAdapter", () => {
   it("quotes argv items that the tmux shell join would mangle", async () => {
     const { exec, calls } = capturingExec({ tmux: () => ({ stdout: "%5\n" }) });
     await tmuxAdapter(exec).splitPane({ targetPane: "%0", layout: "tiled", argv: ["sh", "-c", "echo hi there", "o'brien"] });
-    expect(calls[0]!.args.slice(6)).toEqual(["sh", "-c", "'echo hi there'", "'o'\\''brien'"]);
+    expect(calls[0]!.args.slice(7)).toEqual(["sh", "-c", "'echo hi there'", "'o'\\''brien'"]);
   });
 
   it("returns failure with stderr when tmux errors", async () => {
@@ -72,18 +72,18 @@ describe("tmuxAdapter", () => {
       return calls.map((c) => c.args);
     };
     const splitOnly = (layout: Layout) => [
-      ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
+      ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
       ["select-layout", "-t", "%0", layout],
     ];
     // main-* layouts set their window option (percent) then apply the plain
     // preset layout; select-layout itself rejects "layout,size" suffixes.
     expect(await run("main-vertical", 60)).toEqual([
-      ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
+      ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
       ["set-option", "-w", "-t", "%0", "main-pane-width", "60%"],
       ["select-layout", "-t", "%0", "main-vertical"],
     ]);
     expect(await run("main-horizontal", 80)).toEqual([
-      ["split-window", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
+      ["split-window", "-d", "-P", "-F", "#{pane_id}", "-t", "%0", "opencode"],
       ["set-option", "-w", "-t", "%0", "main-pane-height", "80%"],
       ["select-layout", "-t", "%0", "main-horizontal"],
     ]);

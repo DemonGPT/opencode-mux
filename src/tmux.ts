@@ -50,6 +50,7 @@ export function tmuxAdapter(exec: Exec): Tmux {
     async splitPane({ targetPane, layout, argv, mainPaneSize }) {
       const args = [
         "split-window",
+        "-d",
         "-P",
         "-F",
         "#{pane_id}",
@@ -62,6 +63,8 @@ export function tmuxAdapter(exec: Exec): Tmux {
       const paneId = raw === undefined || raw === "" ? null : raw;
       const paneOk = paneId !== null && paneId !== "";
       if (result.ok && paneOk) {
+        // -d keeps the current (main) pane active: opening a subagent pane must
+        // not steal focus from the TUI the user is working in.
         // Shape the whole window into the requested named layout (e.g. the main
         // pane left with subagents stacked in a right column for main-vertical).
         // tmux keeps re-arranging into this layout as panes are added or removed,

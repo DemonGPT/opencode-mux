@@ -78,6 +78,8 @@ with Vitest. No runtime framework. Package ships only `dist/`
   (finished ones are skipped — no startup pane flash); open pane per child
   session `created` event for our parent; close after `graceSeconds` (default
   1) following session finish.
+- New panes are created with `split-window -d`, so opening a subagent pane
+  never steals focus from the main TUI.
 - Parent session is inferred from pass-through `-s`/`--session` when
   `--parent` is absent.
 - Theme hot-reload: mtime-cached provider checked every 500 ms tick;
