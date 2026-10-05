@@ -16,7 +16,7 @@ with Vitest. No runtime framework. Package ships only `dist/`
 | `src/cli.ts` | Orchestration: tmux/opencode version gates, session creation, owned-session cleanup, watcher spawn, `--mux-watch` path |
 | `src/args.ts` | Flag parsing: mux flags consumed, everything else passed through to opencode; `--mux-*` unknown flags error |
 | `src/config.ts` | `opencode-mux.conf` (XDG-aware) loading; auto-creates with defaults; precedence flags > file > defaults; unknown keys ignored |
-| `src/watch.ts` | Watcher: server events → pane lifecycle; `defaultPaneArgv(sessionID, paneCommand)` = `["opencode", <paneCommand>, "-s", sessionID]` (default `paneCommand` = `"mini"`) |
+| `src/watch.ts` | Watcher: server events → pane lifecycle; `defaultPaneArgv(sessionID, paneCommand)` = `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", sessionID]` for `mini`, `["opencode", "-s", sessionID]` for `tui` (default `paneCommand` = `"mini"`) |
 | `src/tracker.ts` | `PaneTracker` state machine: open → closing (grace) → closed; `closePanes: auto\|keep` |
 | `src/tmux.ts` | Tmux adapter: split-window, kill-pane, window-scoped border styles (`-w`), `currentPane` from `TMUX_PANE` |
 | `src/theme.ts` | Theme resolution + mtime-cached provider (`createThemeStyles`) |
@@ -56,10 +56,16 @@ with Vitest. No runtime framework. Package ships only `dist/`
    `GET /api/info`). `serviceGeneration()` in `cli.ts` selects the matching
    client; the binary's generation must always drive the choice. Keep any new
    server interaction working on **both**.
-5. **Pane command is `opencode mini -s <id>`** (both generations support it).
+5. **Default pane command is `opencode mini -s <id>`** (both generations
+   support it), launched through `env BUN_CONFIG_HTTP_IDLE_TIMEOUT=0` to work
+   around upstream opencode #50135: mini's long-lived `session.wait` is aborted
+   by Bun's 300s fetch idle timeout, freezing the pane during long tool calls.
    Mini removes the tab strip/agent switcher that the full TUI cannot hide —
-   that's deliberate. The main pane always gets the full TUI
-   (`opencode` + pass-through args).
+   that's deliberate. `--pane-command tui` launches the full TUI as bare
+   `opencode -s <id>` — opencode has **no `tui` subcommand**, so
+   `opencode tui -s <id>` would parse `tui` as the directory argument and exit
+   immediately (`ENOENT: chdir … -> 'tui'`), closing the pane. The main pane
+   always gets the full TUI (`opencode` + pass-through args).
 6. **Failures are non-fatal** for appearance: a failing `set-option` or border
    apply never changes exit codes or blocks attach.
 
@@ -132,8 +138,9 @@ npm run build   # tsc -p tsconfig.build.json
 - Theme table regen: `node scripts/generate-theme-table.mjs` (fetches the
   pinned `anomalyco/opencode` v2.0.5 tag) or `--from <dir>` for local assets.
   Idempotent — output must be byte-identical on re-run.
-- Keep tests representative of the *new* pane command shape when touching
-  pane argv (`["opencode", "mini", "-s", id]`; session id is `argv[3]`).
+- Keep tests representative of the pane command shape when touching pane argv:
+  mini is `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", id]`,
+  tui is `["opencode", "-s", id]` (there is no `tui` subcommand).
 - Error messages are prefixed `opencode-mux:` and reference stderr.
 - **Version variables**: on version bump, update both `src/version.ts` (`VERSION` constant) and the README version mention — these must always match `package.json` `version`. Forgetting either causes stale version reporting.
 - **Release flow**: `npm version <x.y.z>` (identity-env vars set) creates the

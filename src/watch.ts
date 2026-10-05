@@ -32,9 +32,29 @@ export interface Watcher {
   start(signal: AbortSignal): Promise<void>;
 }
 
-/** Pane command: attach the child session in the new pane via the minimal mini UI (no tab bar, no agent switcher). */
+/**
+ * Upstream workaround for opencode issue #50135: `opencode mini` keeps a
+ * long-lived `session.wait` request open, but its client uses Bun's default
+ * fetch idle timeout (300s), which aborts the request during long-running tool
+ * calls — the pane then freezes/dies. Disabling the idle timeout is exactly
+ * what the pending upstream fix (PR #50248) does, so this is harmless once it
+ * ships. See https://github.com/anomalyco/opencode/issues/50135
+ */
+const MINI_IDLE_TIMEOUT_ENV = "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0";
+
+/**
+ * Pane command: attach the child session in the new pane.
+ *
+ * `mini` is a real subcommand (`opencode mini -s <id>`, no tab bar / agent
+ * switcher), launched through `env` to carry the idle-timeout workaround above.
+ * The full TUI has **no** `tui` subcommand — `opencode tui -s <id>` makes
+ * opencode parse `tui` as the optional directory argument and exit with
+ * `ENOENT: chdir … -> 'tui'`, closing the pane instantly. The full TUI is
+ * launched bare instead: `opencode -s <id>`.
+ */
 export function defaultPaneArgv(sessionID: string, paneCommand: PaneCommand = "mini"): string[] {
-  return ["opencode", paneCommand, "-s", sessionID];
+  const head = paneCommand === "mini" ? ["env", MINI_IDLE_TIMEOUT_ENV, "opencode", "mini"] : ["opencode"];
+  return [...head, "-s", sessionID];
 }
 
 /** Wires server events → tracker state machine → tmux actions. */
