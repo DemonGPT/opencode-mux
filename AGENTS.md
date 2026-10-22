@@ -143,6 +143,14 @@ npm run build   # tsc -p tsconfig.build.json
 - Additive forward-compat: unknown config keys are ignored; unknown
   non-`--mux-` args pass through to opencode; unknown `--mux-*` flags are an
   error.
+- **Client dependency lines**: `@opencode/client` tracks the newest 2.x
+  (2.1.3, matching the current daemon), `@opencode/client-legacy` stays pinned
+  to `npm:@opencode/client@2.0.5` for the legacy generation. Their *optional*
+  `effect` peer disagrees (4.0.1 vs 4.0.0-rc.112), so `package.json` `overrides`
+  pins `effect` to 4.0.1 under the legacy package: both promise clients are
+  Effect-free at runtime and the override only satisfies npm's resolver —
+  keep it if you bump either line, otherwise `npm install` fails with
+  ERESOLVE.
 - Theme table regen: `node scripts/generate-theme-table.mjs` (fetches the
   pinned `anomalyco/opencode` v2.0.5 tag) or `--from <dir>` for local assets.
   Idempotent — output must be byte-identical on re-run.
