@@ -95,6 +95,16 @@ export function createWatcher(deps: WatchDeps): Watcher {
     if (!result.ok) {
       log(`action failed: kill-pane ${action.paneId} — ${result.error ?? "unknown error"}`);
     }
+    // tmux hands the freed cells to a single neighbouring pane, so the remaining
+    // subagent panes end up with uneven sizes (one grows, the others keep their
+    // old size). Re-applying the configured layout re-tiles them equally, and
+    // restores the configured main pane size for main-* layouts. Runs even when
+    // the kill failed: the pane may have exited on its own, and the uneven
+    // window still needs re-tiling. Appearance failures are non-fatal.
+    const relayout = await deps.tmux.relayout({ targetPane, layout: deps.layout, mainPaneSize: deps.mainPaneSize });
+    if (!relayout.ok) {
+      log(`action failed: relayout ${deps.layout} — ${relayout.error ?? "unknown error"}`);
+    }
   };
 
   const applyTick = async (nowMs: number): Promise<void> => {

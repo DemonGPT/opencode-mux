@@ -9,7 +9,7 @@ matter what your tmux is configured to look like.
 
 When a session running inside opencode-mux spawns a subagent, a new tmux pane
 opens showing that session live. When the subagent finishes, the pane closes
-itself. The subagent panes use opencode's `mini` frontend by default (configurable via `--pane-command` or `pane_command` in the config file) — no tab bar, no agent switcher.
+itself and the remaining subagent panes re-tile to share the space evenly. The subagent panes use opencode's `mini` frontend by default (configurable via `--pane-command` or `pane_command` in the config file) — no tab bar, no agent switcher.
 
 ```
 ┌──────────────────────────────────────────┬──────────────┐
@@ -121,7 +121,9 @@ Precedence: **CLI flags > config file > defaults**.
   subagent-session events, opens a pane per child session via
   `opencode mini -s <id>`, styles the pane borders to match the active
   opencode theme, and closes panes once their session finishes (after the
-  grace period).
+  grace period). Every pane split and every pane close re-applies the
+  configured layout, so the main pane keeps its configured size and the
+  subagent panes always split the remaining space evenly.
 
 ## Features
 

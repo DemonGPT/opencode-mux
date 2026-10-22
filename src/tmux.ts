@@ -1,11 +1,14 @@
 import type { Layout } from "./config.js";
 import type { Exec } from "./exec.js";
 
-export interface TmuxSplitInput {
+export interface TmuxLayoutInput {
   targetPane: string;
   layout: Layout;
   /** Main pane size in percent (20-80) for main-* layouts; other layouts ignore it. */
   mainPaneSize?: number;
+}
+
+export interface TmuxSplitInput extends TmuxLayoutInput {
   argv: string[];
 }
 
@@ -29,6 +32,11 @@ export interface BorderStyles {
 export interface Tmux {
   splitPane(input: TmuxSplitInput): Promise<TmuxResult>;
   killPane(paneId: string): Promise<{ ok: boolean; error: string | null }>;
+  /**
+   * Re-applies the configured layout to the target pane's window, e.g. after a
+   * pane closed so the remaining panes share the space evenly again.
+   */
+  relayout(input: TmuxLayoutInput): Promise<TmuxApplyResult>;
   applyBorderStyles(targetPane: string, styles: BorderStyles): Promise<TmuxApplyResult>;
   clearBorderStyles(targetPane: string): Promise<TmuxApplyResult>;
 }
@@ -43,6 +51,31 @@ export function currentPane(env: NodeJS.ProcessEnv): string | null {
 export function shellQuote(arg: string): string {
   if (/^[A-Za-z0-9_./:@%+-]+$/.test(arg)) return arg;
   return `'${arg.replaceAll("'", "'\\''")}'`;
+}
+
+/**
+ * Applies the named preset layout to the target window (resolved from the
+ * target pane) and sizes the main pane for main-* layouts.
+ *
+ * main-* layouts size their main pane from the window options
+ * main-pane-width / main-pane-height, which accept a percentage.
+ * select-layout itself rejects a "layout,size" suffix ("invalid layout"),
+ * so the matching option is set first, then the plain preset layout is applied.
+ * Non-main layouts have no main pane and ignore the size entirely.
+ *
+ * Best-effort on the sizing option: a failing set-option does not stop the
+ * layout from being applied; the first failure is reported.
+ */
+async function applyLayout(exec: Exec, { targetPane, layout, mainPaneSize }: TmuxLayoutInput): Promise<TmuxApplyResult> {
+  let firstError: string | null = null;
+  if (mainPaneSize !== undefined && layout.startsWith("main-")) {
+    const option = layout === "main-horizontal" ? "main-pane-height" : "main-pane-width";
+    const sizing = await exec.run("tmux", ["set-option", "-w", "-t", targetPane, option, `${mainPaneSize}%`]);
+    if (!sizing.ok) firstError = sizing.stderr.trim() || sizing.error || "tmux failed";
+  }
+  const result = await exec.run("tmux", ["select-layout", "-t", targetPane, layout]);
+  if (!result.ok && firstError === null) firstError = result.stderr.trim() || result.error || "tmux failed";
+  return { ok: firstError === null, error: firstError };
 }
 
 export function tmuxAdapter(exec: Exec): Tmux {
@@ -66,20 +99,10 @@ export function tmuxAdapter(exec: Exec): Tmux {
         // -d keeps the current (main) pane active: opening a subagent pane must
         // not steal focus from the TUI the user is working in.
         // Shape the whole window into the requested named layout (e.g. the main
-        // pane left with subagents stacked in a right column for main-vertical).
-        // tmux keeps re-arranging into this layout as panes are added or removed,
-        // so repeated splits no longer cascade or exhaust pane space.
-        //
-        // main-* layouts size their main pane from the window options
-        // main-pane-width / main-pane-height, which accept a percentage.
-        // select-layout itself rejects a "layout,size" suffix ("invalid layout"),
-        // so set the matching option first, then apply the plain preset layout.
-        // Non-main layouts have no main pane and ignore the size entirely.
-        if (mainPaneSize !== undefined && layout.startsWith("main-")) {
-          const option = layout === "main-horizontal" ? "main-pane-height" : "main-pane-width";
-          await exec.run("tmux", ["set-option", "-w", "-t", targetPane, option, `${mainPaneSize}%`]);
-        }
-        await exec.run("tmux", ["select-layout", "-t", targetPane, layout]);
+        // pane left with subagents stacked in a right column for main-vertical),
+        // so repeated splits do not cascade or exhaust pane space. Appearance
+        // failures are non-fatal: the pane exists either way.
+        await applyLayout(exec, { targetPane, layout, mainPaneSize });
       }
       return {
         ok: result.ok && paneOk,
@@ -93,6 +116,9 @@ export function tmuxAdapter(exec: Exec): Tmux {
         ok: result.ok,
         error: result.ok ? null : result.stderr.trim() || result.error || "tmux failed",
       };
+    },
+    async relayout(input) {
+      return applyLayout(exec, input);
     },
     /**
      * Applies border styles to the target pane's window via window options (-w,

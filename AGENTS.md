@@ -18,7 +18,7 @@ with Vitest. No runtime framework. Package ships only `dist/`
 | `src/config.ts` | `opencode-mux.conf` (XDG-aware) loading; auto-creates with defaults; precedence flags > file > defaults; unknown keys ignored |
 | `src/watch.ts` | Watcher: server events → pane lifecycle; `defaultPaneArgv(sessionID, paneCommand)` = `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", sessionID]` for `mini`, `["opencode", "-s", sessionID]` for `tui` (default `paneCommand` = `"mini"`) |
 | `src/tracker.ts` | `PaneTracker` state machine: open → closing (grace) → closed; `closePanes: auto\|keep` |
-| `src/tmux.ts` | Tmux adapter: split-window, kill-pane, window-scoped border styles (`-w`), `currentPane` from `TMUX_PANE` |
+| `src/tmux.ts` | Tmux adapter: split-window, kill-pane, `relayout` (re-apply the configured layout, used after a pane closes), window-scoped border styles (`-w`), `currentPane` from `TMUX_PANE` |
 | `src/theme.ts` | Theme resolution + mtime-cached provider (`createThemeStyles`) |
 | `src/theme/builtin.ts` | **Generated** — vendored border table of the 33 opencode v2.0.5 built-in themes. Do not hand-edit; regenerate via `scripts/generate-theme-table.mjs` |
 | `src/server.ts` | Connect to the opencode background service (generation-aware) |
@@ -80,6 +80,12 @@ with Vitest. No runtime framework. Package ships only `dist/`
   1) following session finish.
 - New panes are created with `split-window -d`, so opening a subagent pane
   never steals focus from the main TUI.
+- Every split and every close re-applies the configured layout
+  (`tmux.relayout` → `set-option -w main-pane-width/height` for `main-*`,
+  then `select-layout`). tmux hands a closed pane's cells to one neighbour, so
+  without the post-close relayout the remaining subagent panes keep uneven
+  sizes. The relayout runs even when `kill-pane` fails (the pane may have
+  exited on its own); its failures are logged, never fatal.
 - Parent session is inferred from pass-through `-s`/`--session` when
   `--parent` is absent.
 - Theme hot-reload: mtime-cached provider checked every 500 ms tick;
@@ -91,7 +97,7 @@ with Vitest. No runtime framework. Package ships only `dist/`
 ## Testing
 
 ```sh
-npm test        # vitest — full suite must stay green (125 tests baseline)
+npm test        # vitest — full suite must stay green (139 tests baseline)
 npm run check   # tsc --noEmit
 npm run build   # tsc -p tsconfig.build.json
 ```

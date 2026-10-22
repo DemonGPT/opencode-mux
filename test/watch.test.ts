@@ -36,15 +36,17 @@ function makeClient(over: { active?: Record<string, { type: "running" }>; childr
   } as unknown as OpenCodeClient;
 }
 
-function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: string; layout: string; argv: string[] }>; kills?: string[]; borderStyles?: Array<{ targetPane: string; styles: BorderStyles }>; clears?: string[]; borderResult?: TmuxApplyResult; clearResult?: TmuxApplyResult } = {}): Tmux & { splits: Array<{ targetPane: string; layout: string; argv: string[] }>; kills: string[]; borderStyles: Array<{ targetPane: string; styles: BorderStyles }>; clears: string[] } {
+function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: string; layout: string; argv: string[] }>; kills?: string[]; relayouts?: Array<{ targetPane: string; layout: string; mainPaneSize?: number }>; borderStyles?: Array<{ targetPane: string; styles: BorderStyles }>; clears?: string[]; borderResult?: TmuxApplyResult; clearResult?: TmuxApplyResult; relayoutResult?: TmuxApplyResult; killResult?: { ok: boolean; error: string | null } } = {}): Tmux & { splits: Array<{ targetPane: string; layout: string; argv: string[] }>; kills: string[]; relayouts: Array<{ targetPane: string; layout: string; mainPaneSize?: number }>; borderStyles: Array<{ targetPane: string; styles: BorderStyles }>; clears: string[] } {
   const splits = over.splits ?? [];
   const kills = over.kills ?? [];
+  const relayouts = over.relayouts ?? [];
   const borderStyles = over.borderStyles ?? [];
   const clears = over.clears ?? [];
   let next = 0;
   return {
     splits,
     kills,
+    relayouts,
     borderStyles,
     clears,
     async splitPane(input) {
@@ -54,7 +56,11 @@ function makeTmux(over: { paneIds?: string[]; splits?: Array<{ targetPane: strin
     },
     async killPane(paneId) {
       kills.push(paneId);
-      return { ok: true, error: null };
+      return over.killResult ?? { ok: true, error: null };
+    },
+    async relayout(input) {
+      relayouts.push(input);
+      return over.relayoutResult ?? { ok: true, error: null };
     },
     async applyBorderStyles(targetPane, styles) {
       borderStyles.push({ targetPane, styles });
@@ -118,6 +124,48 @@ describe("createWatcher", () => {
     expect(tmux.kills).toEqual(["%8"]);
     await w.tick(4_000);
     expect(tmux.kills).toEqual(["%8"]);
+  });
+
+  it("re-layouts the remaining panes after closing one", async () => {
+    const tmux = makeTmux({ paneIds: ["%1", "%2", "%3"] });
+    const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "auto" });
+    const w = createWatcher(deps({ tmux, tracker, mainPaneSize: 55, now: () => 2_000 }));
+    await w.dispatch(created("ses_a", "ses_p"));
+    await w.dispatch(created("ses_b", "ses_p"));
+    await w.dispatch(created("ses_c", "ses_p"));
+    expect(tmux.relayouts).toEqual([]); // opening panes already shapes the layout
+    await w.dispatch(execSucceeded("ses_b"));
+    await w.tick(3_000);
+    expect(tmux.kills).toEqual(["%2"]);
+    expect(tmux.relayouts).toEqual([{ targetPane: "%0", layout: "main-vertical", mainPaneSize: 55 }]);
+  });
+
+  it("re-layouts even when the pane was already gone, and logs a relayout failure without failing", async () => {
+    const tmux = makeTmux({
+      paneIds: ["%8"],
+      killResult: { ok: false, error: "can't find pane: %8" },
+      relayoutResult: { ok: false, error: "no such window" },
+    });
+    const logs: string[] = [];
+    const w = createWatcher(deps({ tmux, now: () => 2_000, log: (l) => logs.push(l) }));
+    await w.dispatch(created("ses_c", "ses_p"));
+    await w.dispatch(idle("ses_c"));
+    await w.tick(3_000);
+    expect(tmux.kills).toEqual(["%8"]);
+    expect(tmux.relayouts).toHaveLength(1);
+    expect(logs.join("\n")).toMatch(/action failed: kill-pane %8 — can't find pane/);
+    expect(logs.join("\n")).toMatch(/action failed: relayout main-vertical — no such window/);
+  });
+
+  it("does not re-layout when panes are kept", async () => {
+    const tmux = makeTmux({ paneIds: ["%8"] });
+    const tracker = new PaneTracker({ graceMs: 1_000, closePanes: "keep" });
+    const w = createWatcher(deps({ tmux, tracker, now: () => 2_000 }));
+    await w.dispatch(created("ses_c", "ses_p"));
+    await w.dispatch(execSucceeded("ses_c"));
+    await w.tick(1e9);
+    expect(tmux.kills).toEqual([]);
+    expect(tmux.relayouts).toEqual([]);
   });
 
   it("busy revival cancels the pending close", async () => {

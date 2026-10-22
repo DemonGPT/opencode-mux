@@ -101,6 +101,41 @@ describe("tmuxAdapter", () => {
     expect(calls).toEqual([{ command: "tmux", args: ["kill-pane", "-t", "%5"] }]);
   });
 
+  it("relayout re-applies the layout, sizing the main pane for main-* layouts", async () => {
+    const { exec, calls } = capturingExec();
+    const r = await tmuxAdapter(exec).relayout({ targetPane: "%0", layout: "main-vertical", mainPaneSize: 60 });
+    expect(r).toEqual({ ok: true, error: null });
+    expect(calls).toEqual([
+      { command: "tmux", args: ["set-option", "-w", "-t", "%0", "main-pane-width", "60%"] },
+      { command: "tmux", args: ["select-layout", "-t", "%0", "main-vertical"] },
+    ]);
+  });
+
+  it("relayout applies non-main layouts as a plain preset layout", async () => {
+    const { exec, calls } = capturingExec();
+    const r = await tmuxAdapter(exec).relayout({ targetPane: "%0", layout: "tiled", mainPaneSize: 60 });
+    expect(r).toEqual({ ok: true, error: null });
+    expect(calls).toEqual([{ command: "tmux", args: ["select-layout", "-t", "%0", "tiled"] }]);
+  });
+
+  it("relayout still applies the layout when sizing the main pane fails, reporting the failure", async () => {
+    const { exec, calls } = capturingExec({
+      tmux: (args) => (args.includes("main-pane-width") ? { ok: false, stderr: "bad option\n" } : {}),
+    });
+    const r = await tmuxAdapter(exec).relayout({ targetPane: "%0", layout: "main-vertical", mainPaneSize: 60 });
+    expect(r).toEqual({ ok: false, error: "bad option" });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["set-option", "-w", "-t", "%0", "main-pane-width", "60%"],
+      ["select-layout", "-t", "%0", "main-vertical"],
+    ]);
+  });
+
+  it("relayout reports a select-layout failure", async () => {
+    const { exec } = capturingExec({ tmux: () => ({ ok: false, stderr: "no such window\n" }) });
+    const r = await tmuxAdapter(exec).relayout({ targetPane: "%0", layout: "even-vertical" });
+    expect(r).toEqual({ ok: false, error: "no such window" });
+  });
+
   it("applyBorderStyles sets both border styles with -w scoping on the target pane", async () => {
     const { exec, calls } = capturingExec();
     const r = await tmuxAdapter(exec).applyBorderStyles("%0", { inactive: "fg=colour235", active: "fg=green" });
