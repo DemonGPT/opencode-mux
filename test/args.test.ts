@@ -77,6 +77,12 @@ describe("parseArgs", () => {
     expect(parseArgs(["--version"]).version).toBe(true);
     expect(parseArgs(["--mux-watch"]).watch).toBe(true);
   });
+
+  it("collects internal --mux-scope paths without leaking them to opencode", () => {
+    expect(parseArgs(["--mux-watch", "--mux-scope", "/a", "--mux-scope=/b", "--model", "fast"]).scope).toEqual(["/a", "/b"]);
+    expect(parseArgs(["--mux-scope", "/a", "prompt"]).passThrough).toEqual(["prompt"]);
+    expect(() => parseArgs(["--mux-scope"])).toThrow(/--mux-scope/);
+  });
 });
 
 describe("parentFromPassThrough", () => {

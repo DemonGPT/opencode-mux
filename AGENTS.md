@@ -13,10 +13,10 @@ with Vitest. No runtime framework. Package ships only `dist/`
 | Module | Role |
 | ------ | ---- |
 | `src/bin.ts` | Entry; `#!/usr/bin/env node`, wires `main` with real spawn/env |
-| `src/cli.ts` | Orchestration: tmux/opencode version gates, session creation, owned-session cleanup, watcher spawn, `--mux-watch` path |
+| `src/cli.ts` | Orchestration: tmux/opencode version gates, session creation (collision-safe naming, see concurrency invariant), owned-session cleanup, watcher spawn, `--mux-watch` path |
 | `src/args.ts` | Flag parsing: mux flags consumed, everything else passed through to opencode; `--mux-*` unknown flags error |
 | `src/config.ts` | `opencode-mux.conf` (XDG-aware) loading; auto-creates with defaults; precedence flags > file > defaults; unknown keys ignored |
-| `src/watch.ts` | Watcher: server events → pane lifecycle; `defaultPaneArgv(sessionID, paneCommand)` = `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", sessionID]` for `mini`, `["opencode", "-s", sessionID]` for `tui` (default `paneCommand` = `"mini"`) |
+| `src/watch.ts` | Watcher: server events → pane lifecycle; optional project scoping (`projectDirectories`, see concurrency invariant); `defaultPaneArgv(sessionID, paneCommand)` = `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", sessionID]` for `mini`, `["opencode", "-s", sessionID]` for `tui` (default `paneCommand` = `"mini"`) |
 | `src/tracker.ts` | `PaneTracker` state machine: open → closing (grace) → closed; `closePanes: auto\|keep` |
 | `src/tmux.ts` | Tmux adapter: split-window, kill-pane, `relayout` (re-apply the configured layout, used after a pane closes), window-scoped border styles (`-w`), `currentPane` from `TMUX_PANE` |
 | `src/theme.ts` | Theme resolution + mtime-cached provider (`createThemeStyles`) |
@@ -68,16 +68,37 @@ with Vitest. No runtime framework. Package ships only `dist/`
    always gets the full TUI (`opencode` + pass-through args).
 6. **Failures are non-fatal** for appearance: a failing `set-option` or border
    apply never changes exit codes or blocks attach.
+7. **Instances are independent**: several opencode-mux processes may run
+   concurrently (one per project/terminal) against the same background service.
+   - Each outside-tmux launch **owns exactly one** tmux session and never
+     shares it: `new-session` is attempted with the configured base name
+     (`mux`), then `<base>-<project>`, then `<base>-<project>-N`; the chosen
+     name is logged and handed to the re-exec'd instance via
+     `-e MUX_SESSION_NAME=<name>`. `kill-session`/`attach` always use the
+     exact-match form `=<name>` so cleanup can never kill a sibling session.
+     (`set-option` rejects `=name` on tmux 3.7 — keep bare names there.)
+   - A watcher **without an explicit parent** must only pane subagents whose
+     parent session belongs to its own project (`projectDirectories` =
+     cwd + an explicit opencode `<directory>` arg, matched with
+     `isSameProject`: equal or ancestor/descendant). Never reintroduce global
+     watch-all: two instances would open panes for each other's subagents.
+   - An explicit `--parent`/`-s` pins the scope and skips directory matching.
 
 ## Behavior notes
 
-- Outside tmux: create owned detached session (env `MUX_OWNED_SESSION=1`),
-  scope `status off`/`mouse on` to it, re-exec inside, attach. On TUI exit,
-  `kill-session` the owned session.
+- Outside tmux: create owned detached session (env `MUX_OWNED_SESSION=1` plus
+  `MUX_SESSION_NAME` for the resolved name), scope `status off`/`mouse on` to
+  it, re-exec inside, attach. On TUI exit, `kill-session` the owned session.
 - Inside tmux: run as watcher; adopt already-running children at start
   (finished ones are skipped — no startup pane flash); open pane per child
   session `created` event for our parent; close after `graceSeconds` (default
-  1) following session finish.
+  1) following session finish. Without an explicit parent, only children of
+  sessions in this project get panes (concurrent instances; parent directory
+  lookups via `session.get` are cached per parent id).
+- The watcher log is shared by all instances
+  (`$XDG_STATE_HOME/opencode-mux/watch.log`); lines are appended atomically.
+- Concurrent instances re-apply layout and borders per their own window, so
+  they never fight over another window's geometry.
 - New panes are created with `split-window -d`, so opening a subagent pane
   never steals focus from the main TUI.
 - Every split and every close re-applies the configured layout
@@ -92,12 +113,14 @@ with Vitest. No runtime framework. Package ships only `dist/`
   `JSON.stringify` change detection; apply/clear via `applyBorderStyles`/
   `clearBorderStyles`; **zero tmux calls when nothing changed**.
 - Watcher log: `$XDG_STATE_HOME/opencode-mux/watch.log`.
-- `--mux-watch`/`--parent` are internal flags emitted by the CLI itself.
+- `--mux-watch`/`--mux-scope`/`--parent` are internal flags emitted by the CLI
+  itself (`--mux-scope` forwards project-scope directories to the watcher; an
+  explicit `--parent` disables directory scoping).
 
 ## Testing
 
 ```sh
-npm test        # vitest — full suite must stay green (139 tests baseline)
+npm test        # vitest — full suite must stay green (159 tests baseline)
 npm run check   # tsc --noEmit
 npm run build   # tsc -p tsconfig.build.json
 ```

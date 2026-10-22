@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
-import { appendFileSync, closeSync, mkdirSync, openSync } from "node:fs";
+import { appendFileSync, closeSync, mkdirSync, openSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { parentFromPassThrough, parseArgs } from "./args.js";
 import type { ParsedArgs } from "./args.js";
 import { loadConfig } from "./config.js";
@@ -127,7 +127,8 @@ export function usageText(): string {
     "  --pane-command <cmd>  pane frontend: mini | tui (default mini)",
     "  --grace <seconds>     close delay after a session finishes (default 1)",
     "  --parent <id>         only watch children of this session",
-    "  --session-name <name> tmux session name (default mux)",
+    "  --session-name <name> base name for the owned tmux session (default mux;",
+    "                        suffixed with the project when already taken)",
     "  -h, --help            show this help and exit",
     "  --version             print the version and exit",
     "",
@@ -163,6 +164,60 @@ export function serviceGeneration(version: string): ServiceGeneration | null {
   return minor === 0 && Number(match[3]) < 6 ? "legacy" : "new";
 }
 
+/** tmux session name candidates tried before giving up (concurrent instances). */
+const MAX_SESSION_NAME_ATTEMPTS = 20;
+
+/** Project tag for auto-named sessions: tmux rejects spaces, dots and colons. */
+export function sessionNameSuffix(cwd: string): string {
+  const cleaned = basename(cwd)
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24);
+  return cleaned === "" ? "session" : cleaned;
+}
+
+/**
+ * tmux session names for successive attempts: the configured base name first,
+ * then "<base>-<project>", then "<base>-<project>-2, -3, …".
+ *
+ * Later attempts only matter when the earlier names are taken — by another
+ * opencode-mux instance running concurrently, or by a session left over from a
+ * crash. Colliding instead of sharing is deliberate: each instance owns its
+ * session (it kills it on exit) and two TUIs must not share one window.
+ */
+export function sessionNameCandidate(base: string, cwd: string, attempt: number): string {
+  if (attempt <= 0) return base;
+  const tagged = `${base}-${sessionNameSuffix(cwd)}`;
+  return attempt === 1 ? tagged : `${tagged}-${attempt}`;
+}
+
+/** True when tmux refused `new-session` because the session name is taken. */
+export function isSessionNameTaken(result: SpawnResult): boolean {
+  return /duplicate session|already exists/i.test(`${result.stderr}\n${result.error ?? ""}`);
+}
+
+/**
+ * Directories this instance may be showing: its working directory plus an
+ * explicit opencode `<directory>` argument from the pass-through args (opencode
+ * chdirs there, so its sessions belong to that directory, not our cwd).
+ * Used to keep concurrent instances' subagents in their own windows.
+ */
+export function scopeDirectories(passThrough: string[], cwd: string): string[] {
+  const dirs = [cwd];
+  for (const arg of passThrough) {
+    if (arg.startsWith("-")) continue;
+    try {
+      if (statSync(arg).isDirectory()) {
+        const dir = resolve(cwd, arg);
+        if (!dirs.includes(dir)) dirs.push(dir);
+      }
+    } catch {
+      // not an existing path (a prompt, a value, …)
+    }
+  }
+  return dirs;
+}
+
 /** Re-emits resolved CLI flags as mux argv (for the watcher child process). */
 export function flagsToArgv(flags: CliFlags): string[] {
   const argv: string[] = [];
@@ -177,11 +232,12 @@ export function flagsToArgv(flags: CliFlags): string[] {
 }
 
 /** argv for the spawned watcher process: marker + config path + explicit flags. */
-export function buildWatcherArgv(opts: { configPath?: string; flags: CliFlags }): string[] {
+export function buildWatcherArgv(opts: { configPath?: string; flags: CliFlags; scope?: string[] }): string[] {
   return [
     "--mux-watch",
     ...(opts.configPath !== undefined ? ["--config", opts.configPath] : []),
     ...flagsToArgv(opts.flags),
+    ...(opts.scope ?? []).flatMap((dir) => ["--mux-scope", dir]),
   ];
 }
 
@@ -197,6 +253,8 @@ export function buildNewSessionCommand(input: { entryPath: string; originalArgv:
     "-d",
     "-e",
     "MUX_OWNED_SESSION=1",
+    "-e",
+    `MUX_SESSION_NAME=${input.sessionName}`,
     "-s",
     input.sessionName,
     "-c",
@@ -210,7 +268,15 @@ async function resolveConfig(parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promis
     const inferred = parentFromPassThrough(parsed.passThrough);
     if (inferred !== null) parsed.flags.parent = inferred;
   }
-  return loadConfig({ path: parsed.configPath, flags: parsed.flags, env });
+  const config = await loadConfig({ path: parsed.configPath, flags: parsed.flags, env });
+  // The launcher may have picked a different name than the configured base when
+  // that name was taken by another instance; the owned session must use it for
+  // its tmux options and cleanup. Only our own launch sets MUX_SESSION_NAME.
+  const ownedName = env.MUX_SESSION_NAME;
+  if (env.MUX_OWNED_SESSION === "1" && ownedName !== undefined && ownedName !== "") {
+    config.sessionName = ownedName;
+  }
+  return config;
 }
 
 async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDeps, generation: ServiceGeneration): Promise<number> {
@@ -241,6 +307,14 @@ async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDep
     mainPaneSize: config.mainPaneSize,
     themeStyles: createThemeStyles({ env, cwd: deps.cwd ?? process.cwd() }),
     parentID: config.parent,
+    // Without an explicit parent we watch every child session; scope that to
+    // this instance's project so concurrent instances do not pane each other's
+    // subagents. The cwd is the watcher's own; extra directories (an explicit
+    // opencode <directory>) arrive via the internal --mux-scope flags.
+    projectDirectories:
+      config.parent === null
+        ? [...new Set([deps.cwd ?? process.cwd(), ...parsed.scope])]
+        : undefined,
     paneArgv: (id) => defaultPaneArgv(id, config.paneCommand),
     tickEveryMs: 500,
   });
@@ -306,45 +380,86 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
   const insideTmux = env.TMUX !== undefined && env.TMUX !== "" && env.TMUX_PANE !== undefined && env.TMUX_PANE !== "";
 
   if (!insideTmux) {
-    const created = await deps
-      .spawn(tmuxCommand, buildNewSessionCommand({
-        entryPath: deps.entryPath,
-        originalArgv: argv,
-        sessionName: config.sessionName,
-        cwd: deps.cwd ?? process.cwd(),
-      }))
-      .done;
-    if (!created.ok) {
+    const cwd = deps.cwd ?? process.cwd();
+    // Concurrent instances each own their tmux session: when the configured
+    // name is taken (another instance, or a stale session), the next candidate
+    // is used. A failed `new-session` is the only race-free check — tmux
+    // refuses duplicate names atomically — so collisions are retried rather
+    // than probed.
+    let sessionName: string | null = null;
+    let failure: SpawnResult | null = null;
+    for (let attempt = 0; attempt < MAX_SESSION_NAME_ATTEMPTS; attempt++) {
+      const candidate = sessionNameCandidate(config.sessionName, cwd, attempt);
+      const created = await deps
+        .spawn(tmuxCommand, buildNewSessionCommand({
+          entryPath: deps.entryPath,
+          originalArgv: argv,
+          sessionName: candidate,
+          cwd,
+        }))
+        .done;
+      if (created.ok) {
+        sessionName = candidate;
+        break;
+      }
+      failure = created;
+      if (!isSessionNameTaken(created)) break;
+    }
+    if (sessionName === null) {
       // nodeSpawn reports `error` only when the command could not be started
       // (ENOENT, …); a tmux that ran and failed exits non-zero with the reason
       // on stderr (e.g. "duplicate session: mux"). Surface that instead of
       // printing "unknown error".
       const detail =
-        created.error ??
-        (created.stderr.trim() !== "" ? created.stderr.trim() : `tmux exited with code ${created.code ?? "unknown"}`);
+        failure === null
+          ? `no free session name after ${MAX_SESSION_NAME_ATTEMPTS} attempts`
+          : (failure.error ??
+            (failure.stderr.trim() !== "" ? failure.stderr.trim() : `tmux exited with code ${failure.code ?? "unknown"}`));
       process.stderr.write(`opencode-mux: failed to start tmux session: ${detail}\n`);
       return 1;
+    }
+    if (sessionName !== config.sessionName) {
+      process.stderr.write(`opencode-mux: tmux session "${config.sessionName}" is taken; using "${sessionName}"\n`);
     }
     // Session-scoped appearance, so the mux looks coherent regardless of the
     // user's global config. These touch only our own session — never -g.
     // Failures are non-fatal: attach proceeds and the exit code is unchanged.
-    await deps.spawn(tmuxCommand, ["set-option", "-t", config.sessionName, "status", "off"]).done;
-    await deps.spawn(tmuxCommand, ["set-option", "-t", config.sessionName, "mouse", "on"]).done;
-    const attached = await deps.spawn(tmuxCommand, ["attach", "-t", config.sessionName], { inherit: true }).done;
+    // `set-option` rejects the "=name" exact-match form (tmux 3.7), so it uses
+    // the bare name; our session exists at this point, so it matches exactly.
+    await deps.spawn(tmuxCommand, ["set-option", "-t", sessionName, "status", "off"]).done;
+    await deps.spawn(tmuxCommand, ["set-option", "-t", sessionName, "mouse", "on"]).done;
+    // "=name" pins the exact session: a bare name would prefix-match another
+    // instance's session if ours disappeared in the meantime.
+    const attached = await deps.spawn(tmuxCommand, ["attach", "-t", `=${sessionName}`], { inherit: true }).done;
     return attached.ok ? 0 : attached.code ?? 1;
   }
 
   const logFile = watchLogPath(env);
   mkdirSync(dirname(logFile), { recursive: true });
-  const watcher = deps.spawn(nodeCommand, [deps.entryPath, ...buildWatcherArgv({ configPath: parsed.configPath, flags: parsed.flags })], {
-    stdoutFile: logFile,
-    stderrFile: logFile,
-  });
+  const cwd = deps.cwd ?? process.cwd();
+  const watcher = deps.spawn(
+    nodeCommand,
+    [
+      deps.entryPath,
+      ...buildWatcherArgv({
+        configPath: parsed.configPath,
+        flags: parsed.flags,
+        // Openers other than the cwd: the watcher cannot see the pass-through
+        // args, so forward the directories it must consider ours.
+        scope: scopeDirectories(parsed.passThrough, cwd).filter((dir) => dir !== cwd),
+      }),
+    ],
+    {
+      stdoutFile: logFile,
+      stderrFile: logFile,
+    },
+  );
   const tui = await deps.spawn(opencodeCommand, parsed.passThrough, { inherit: true }).done;
   watcher.kill();
   await watcher.done;
   if (env.MUX_OWNED_SESSION === "1") {
-    await deps.spawn(tmuxCommand, ["kill-session", "-t", config.sessionName]).done;
+    // Exact match, never a prefix match: "mux" must not kill a sibling "mux-2".
+    await deps.spawn(tmuxCommand, ["kill-session", "-t", `=${config.sessionName}`]).done;
   }
   return tui.ok ? 0 : tui.code ?? 1;
 }

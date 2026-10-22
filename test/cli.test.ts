@@ -5,9 +5,13 @@ import {
   buildReexecArgv,
   buildWatcherArgv,
   flagsToArgv,
+  isSessionNameTaken,
   main,
   parseMajorVersion,
+  scopeDirectories,
   serviceGeneration,
+  sessionNameCandidate,
+  sessionNameSuffix,
   usageText,
   watchLogPath,
 } from "../src/cli.js";
@@ -32,11 +36,11 @@ function fakeSpawn(results: Record<string, (args: string[]) => Partial<SpawnResu
   return { spawn, calls, killed };
 }
 
-const deps = (over: { spawn?: SpawnFn; env?: NodeJS.ProcessEnv; entryPath?: string; connectServer?: CliDeps["connectServer"] } = {}) => ({
+const deps = (over: { spawn?: SpawnFn; env?: NodeJS.ProcessEnv; entryPath?: string; cwd?: string; connectServer?: CliDeps["connectServer"] } = {}) => ({
   env: over.env ?? {},
   spawn: over.spawn ?? fakeSpawn().spawn,
   entryPath: over.entryPath ?? "/x/dist/bin.js",
-  cwd: "/x",
+  cwd: over.cwd ?? "/x",
   connectServer: over.connectServer,
 });
 
@@ -104,19 +108,49 @@ describe("flag argv builders", () => {
     ]);
   });
 
-  it("buildWatcherArgv is --mux-watch plus config path and flags", () => {
+  it("buildWatcherArgv is --mux-watch plus config path, flags and scope", () => {
     expect(buildWatcherArgv({ flags: {} })).toEqual(["--mux-watch"]);
     expect(buildWatcherArgv({ configPath: "/c", flags: { parent: "ses_p" } })).toEqual([
       "--mux-watch", "--config", "/c", "--parent", "ses_p",
+    ]);
+    expect(buildWatcherArgv({ flags: {}, scope: ["/other/project"] })).toEqual([
+      "--mux-watch", "--mux-scope", "/other/project",
     ]);
   });
 
   it("buildReexecArgv and buildNewSessionCommand assemble the tmux re-exec", () => {
     expect(buildReexecArgv("/entry/bin.js", ["-s", "ses_p"])).toEqual(["/entry/bin.js", "-s", "ses_p"]);
     expect(buildNewSessionCommand({ entryPath: "/entry/bin.js", originalArgv: ["opencode", "--session=ses a"], sessionName: "mux", cwd: "/x" })).toEqual([
-      "new-session", "-d", "-e", "MUX_OWNED_SESSION=1", "-s", "mux", "-c", "/x",
+      "new-session", "-d", "-e", "MUX_OWNED_SESSION=1", "-e", "MUX_SESSION_NAME=mux", "-s", "mux", "-c", "/x",
       "/entry/bin.js", "opencode", "'--session=ses a'",
     ]);
+  });
+});
+
+describe("concurrent session naming", () => {
+  it("tags later candidates with the project directory", () => {
+    expect(sessionNameSuffix("/home/u/work/my-app")).toBe("my-app");
+    expect(sessionNameSuffix("/home/u/work/My App.v2")).toBe("My-App-v2");
+    expect(sessionNameSuffix("/")).toBe("session");
+    expect(sessionNameSuffix("/home/u/wörk")).toBe("w-rk");
+    expect(sessionNameCandidate("mux", "/home/u/work/my-app", 0)).toBe("mux");
+    expect(sessionNameCandidate("mux", "/home/u/work/my-app", 1)).toBe("mux-my-app");
+    expect(sessionNameCandidate("mux", "/home/u/work/my-app", 2)).toBe("mux-my-app-2");
+    expect(sessionNameCandidate("work", "/home/u/work/my-app", 1)).toBe("work-my-app");
+  });
+
+  it("detects tmux's duplicate-session refusal only", () => {
+    const result = (stderr: string) => ({ ok: false, code: 1, error: null, stdout: "", stderr });
+    expect(isSessionNameTaken(result("duplicate session: mux\n"))).toBe(true);
+    expect(isSessionNameTaken(result("session already exists\n"))).toBe(true);
+    expect(isSessionNameTaken(result("no server running on /tmp/tmux-1000/default\n"))).toBe(false);
+    expect(isSessionNameTaken(result(""))).toBe(false);
+  });
+
+  it("scopes to the cwd plus explicit opencode directory arguments", () => {
+    const dir = import.meta.dirname;
+    expect(scopeDirectories([], "/work/app")).toEqual(["/work/app"]);
+    expect(scopeDirectories([dir, "--model", "fast", "not-a-path"], "/work/app")).toEqual(["/work/app", dir]);
   });
 });
 
@@ -214,7 +248,33 @@ describe("main", () => {
     expect(tui.args).toEqual(["-s", "ses_p"]);
     expect(tui.opts?.inherit).toBe(true);
     expect(killed.some((k) => k.command === "node")).toBe(true);
-    expect(calls.some((c) => c.command === "tmux" && c.args[0] === "kill-session")).toBe(true);
+    expect(calls.filter((c) => c.command === "tmux" && c.args[0] === "kill-session").map((c) => c.args)).toEqual([
+      ["kill-session", "-t", "=mux"],
+    ]);
+  });
+
+  it("inside tmux: forwards an explicit opencode <directory> to the watcher scope", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const env = { TMUX: "/tmp/t,1,0", TMUX_PANE: "%0", XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" };
+    const dir = import.meta.dirname;
+    expect(await main([dir], deps({ spawn, env, entryPath: "/x/dist/bin.js" }))).toBe(0);
+    const watcher = calls.find((c) => c.command === "node")!;
+    expect(watcher.args).toEqual(["/x/dist/bin.js", "--mux-watch", "--mux-scope", dir]);
+  });
+
+  it("inside tmux: MUX_SESSION_NAME from the launcher wins over the config base name", async () => {
+    const { spawn, calls } = fakeSpawn();
+    const env = {
+      TMUX: "/tmp/t,1,0",
+      TMUX_PANE: "%0",
+      MUX_OWNED_SESSION: "1",
+      MUX_SESSION_NAME: "mux-my-app",
+      XDG_CONFIG_HOME: "/nonexistent",
+      XDG_STATE_HOME: "/tmp/omux",
+    };
+    expect(await main(["--session-name", "mux"], deps({ spawn, env, entryPath: "/x/dist/bin.js" }))).toBe(0);
+    // The watcher still gets the explicit flag, the cleanup uses the owned name.
+    expect(calls.filter((c) => c.command === "tmux").map((c) => c.args)).toEqual([["-V"], ["kill-session", "-t", "=mux-my-app"]]);
   });
 
   it("outside tmux: creates a session, applies session options, and attaches", async () => {
@@ -225,11 +285,76 @@ describe("main", () => {
     );
     expect(code).toBe(0);
     const tmuxCalls = calls.filter((c) => c.command === "tmux").map((c) => c.args);
-    expect(tmuxCalls[1]!.slice(0, 8)).toEqual(["new-session", "-d", "-e", "MUX_OWNED_SESSION=1", "-s", "mux", "-c", "/x"]);
-    expect(tmuxCalls[1]!.slice(8)).toEqual(["/x/dist/bin.js", "--layout", "tiled", "--foo"]);
+    expect(tmuxCalls[1]!.slice(0, 10)).toEqual(["new-session", "-d", "-e", "MUX_OWNED_SESSION=1", "-e", "MUX_SESSION_NAME=mux", "-s", "mux", "-c", "/x"]);
+    expect(tmuxCalls[1]!.slice(10)).toEqual(["/x/dist/bin.js", "--layout", "tiled", "--foo"]);
     expect(tmuxCalls[2]).toEqual(["set-option", "-t", "mux", "status", "off"]);
     expect(tmuxCalls[3]).toEqual(["set-option", "-t", "mux", "mouse", "on"]);
-    expect(tmuxCalls[4]).toEqual(["attach", "-t", "mux"]);
+    expect(tmuxCalls[4]).toEqual(["attach", "-t", "=mux"]);
+  });
+
+  it("outside tmux: a taken session name falls back to a project-tagged name", async () => {
+    const taken = new Set(["mux"]);
+    const { spawn, calls } = fakeSpawn({
+      tmux: (args) => {
+        if (args[0] !== "new-session") return {};
+        const name = args[args.indexOf("-s") + 1]!;
+        if (taken.has(name)) return { ok: false, code: 1, stderr: `duplicate session: ${name}\n` };
+        taken.add(name);
+        return {};
+      },
+    });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const code = await main(
+        [],
+        deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js", cwd: "/work/my-app" }),
+      );
+      expect(code).toBe(0);
+      const tmuxCalls = calls.filter((c) => c.command === "tmux").map((c) => c.args);
+      const names = tmuxCalls.filter((a) => a[0] === "new-session").map((a) => a[a.indexOf("-s") + 1]);
+      expect(names).toEqual(["mux", "mux-my-app"]);
+      expect(tmuxCalls).toContainEqual(["set-option", "-t", "mux-my-app", "status", "off"]);
+      expect(tmuxCalls).toContainEqual(["attach", "-t", "=mux-my-app"]);
+      expect(err.mock.calls.join("")).toMatch(/tmux session "mux" is taken; using "mux-my-app"/);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("outside tmux: keeps trying distinct names, then reports the duplicate failure", async () => {
+    const { spawn, calls } = fakeSpawn({
+      tmux: (args) => (args[0] === "new-session" ? { ok: false, code: 1, stderr: "duplicate session: mux\n" } : {}),
+    });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(
+        await main([], deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js", cwd: "/work/my-app" })),
+      ).toBe(1);
+      const attempts = calls.filter((c) => c.command === "tmux" && c.args[0] === "new-session");
+      expect(attempts).toHaveLength(20);
+      expect(attempts[0]!.args).toContain("mux");
+      expect(attempts[1]!.args).toContain("mux-my-app");
+      expect(err.mock.calls.join("")).toMatch(/failed to start tmux session: duplicate session: mux/);
+      expect(calls.some((c) => c.command === "tmux" && c.args[0] === "attach")).toBe(false);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("outside tmux: a non-collision failure is reported immediately", async () => {
+    const { spawn, calls } = fakeSpawn({
+      tmux: (args) => (args[0] === "new-session" ? { ok: false, code: 1, stderr: "no server running on /tmp/tmux\n" } : {}),
+    });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(
+        await main([], deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js" })),
+      ).toBe(1);
+      expect(calls.filter((c) => c.command === "tmux" && c.args[0] === "new-session")).toHaveLength(1);
+      expect(err.mock.calls.join("")).toMatch(/failed to start tmux session: no server running/);
+    } finally {
+      err.mockRestore();
+    }
   });
 
   it("outside tmux: a failing set-option is non-fatal and attach still runs", async () => {
@@ -244,27 +369,7 @@ describe("main", () => {
     expect(code).toBe(0);
     const tmuxCalls = calls.filter((c) => c.command === "tmux").map((c) => c.args);
     expect(tmuxCalls.some((a) => a[0] === "set-option")).toBe(true);
-    expect(tmuxCalls.at(-1)).toEqual(["attach", "-t", "mux"]);
-  });
-
-  it("outside tmux: a failing new-session reports tmux's stderr instead of 'unknown error'", async () => {
-    const { spawn, calls } = fakeSpawn({
-      tmux: (args) =>
-        args[0] === "new-session" ? { ok: false, code: 1, stderr: "duplicate session: mux\n" } : {},
-    });
-    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-    try {
-      const code = await main(
-        [],
-        deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js" }),
-      );
-      expect(code).toBe(1);
-      expect(err.mock.calls.join("")).toBe("opencode-mux: failed to start tmux session: duplicate session: mux\n");
-      // No session to attach to, no session options to apply.
-      expect(calls.filter((c) => c.command === "tmux").map((c) => c.args[0])).toEqual(["-V", "new-session"]);
-    } finally {
-      err.mockRestore();
-    }
+    expect(tmuxCalls.at(-1)).toEqual(["attach", "-t", "=mux"]);
   });
 
   it("outside tmux: a failing new-session without stderr reports the exit code", async () => {

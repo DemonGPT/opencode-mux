@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { OpenCodeClient, OpenCodeEvent, SessionInfo } from "@opencode/client";
 import { PaneTracker } from "../src/tracker.ts";
 import type { BorderStyles, Tmux, TmuxApplyResult } from "../src/tmux.ts";
-import { createWatcher, defaultPaneArgv } from "../src/watch.ts";
+import { createWatcher, defaultPaneArgv, isSameProject } from "../src/watch.ts";
 
 const created = (sessionID: string, parentID: string, slug = "coder"): OpenCodeEvent =>
   ({ type: "session.created", data: { sessionID, parentID, slug } }) as unknown as OpenCodeEvent;
@@ -17,10 +17,10 @@ const execStarted = (sessionID: string): OpenCodeEvent =>
 const execSucceeded = (sessionID: string): OpenCodeEvent =>
   ({ type: "session.execution.succeeded", data: { sessionID } }) as unknown as OpenCodeEvent;
 
-const sessionInfo = (id: string, parentID: string): SessionInfo =>
-  ({ id, parentID, projectID: "p", cost: {}, tokens: {}, time: { created: 1, updated: 1 }, location: { kind: "local", directory: "/x", project: "p" } }) as unknown as SessionInfo;
+const sessionInfo = (id: string, parentID: string, directory = "/x"): SessionInfo =>
+  ({ id, parentID, projectID: "p", cost: {}, tokens: {}, time: { created: 1, updated: 1 }, location: { kind: "local", directory, project: "p" } }) as unknown as SessionInfo;
 
-function makeClient(over: { active?: Record<string, { type: "running" }>; children?: SessionInfo[]; stream?: (opts: { signal?: AbortSignal }) => AsyncIterable<OpenCodeEvent> }): OpenCodeClient {
+function makeClient(over: { active?: Record<string, { type: "running" }>; children?: SessionInfo[]; parents?: Record<string, SessionInfo>; getError?: string; stream?: (opts: { signal?: AbortSignal }) => AsyncIterable<OpenCodeEvent> }) {
   const subscribe = (opts: { signal?: AbortSignal }) =>
     over.stream ? over.stream(opts) : (async function* () {})();
   return {
@@ -30,6 +30,12 @@ function makeClient(over: { active?: Record<string, { type: "running" }>; childr
       },
       async active() {
         return over.active ?? {};
+      },
+      async get(input: { sessionID: string }) {
+        if (over.getError !== undefined) throw new Error(over.getError);
+        const info = over.parents?.[input.sessionID];
+        if (info === undefined) throw new Error(`session not found: ${input.sessionID}`);
+        return info;
       },
     },
     event: { subscribe },
@@ -431,5 +437,121 @@ describe("createWatcher", () => {
     current = b;
     await w.tick(4_000); // changed again → one more attempt (and one more log)
     expect(logs.filter((l) => l.includes("styling failed: boom")).length).toBeLessThanOrEqual(2);
+  });
+});
+
+describe("isSameProject", () => {
+  it("matches the same directory, with or without a trailing slash", () => {
+    expect(isSameProject("/work/app", "/work/app")).toBe(true);
+    expect(isSameProject("/work/app/", "/work/app")).toBe(true);
+  });
+
+  it("matches a project root and its subdirectories in both directions", () => {
+    expect(isSameProject("/work/app", "/work/app/packages/web")).toBe(true);
+    expect(isSameProject("/work/app/packages/web", "/work/app")).toBe(true);
+  });
+
+  it("keeps sibling directories with a shared prefix apart", () => {
+    expect(isSameProject("/work/app", "/work/app-2")).toBe(false);
+    expect(isSameProject("/work/apple", "/work/app")).toBe(false);
+  });
+});
+
+describe("createWatcher with project scoping (concurrent instances)", () => {
+  const scoped = (over: Partial<Parameters<typeof createWatcher>[0]> = {}) =>
+    deps({ parentID: null, projectDirectories: ["/work/mine"], ...over });
+
+  it("panes a subagent whose parent belongs to this project", async () => {
+    const tmux = makeTmux({ paneIds: ["%1", "%2"] });
+    const w = createWatcher(
+      scoped({
+        tmux,
+        client: makeClient({
+          parents: {
+            ses_mine: sessionInfo("ses_mine", undefined as unknown as string, "/work/mine"),
+            ses_theirs: sessionInfo("ses_theirs", undefined as unknown as string, "/work/theirs"),
+          },
+        }),
+      }),
+    );
+    await w.dispatch(created("ses_child_a", "ses_mine"));
+    await w.dispatch(created("ses_child_b", "ses_theirs"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tmux.splits[0]!.argv).toContain("ses_child_a");
+  });
+
+  it("looks a parent's directory up once and reuses it", async () => {
+    const tmux = makeTmux({ paneIds: ["%1", "%2"] });
+    const client = makeClient({
+      parents: { ses_mine: sessionInfo("ses_mine", undefined as unknown as string, "/work/mine") },
+    });
+    const get = vi.spyOn(client.session, "get");
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_a", "ses_mine"));
+    await w.dispatch(created("ses_b", "ses_mine"));
+    expect(tmux.splits).toHaveLength(2);
+    expect(get).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats a subdirectory of this project as ours", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const w = createWatcher(
+      scoped({
+        tmux,
+        client: makeClient({
+          parents: { ses_root: sessionInfo("ses_root", undefined as unknown as string, "/work/mine/packages/web") },
+        }),
+      }),
+    );
+    await w.dispatch(created("ses_child", "ses_root"));
+    expect(tmux.splits).toHaveLength(1);
+  });
+
+  it("skips and logs when the parent cannot be looked up, without caching the failure", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const logs: string[] = [];
+    const client = makeClient({ getError: "daemon hiccup" });
+    const w = createWatcher(scoped({ tmux, client, log: (l) => logs.push(l) }));
+    await w.dispatch(created("ses_child", "ses_mine"));
+    expect(tmux.splits).toEqual([]);
+    expect(logs.join("\n")).toMatch(/scope lookup failed: ses_mine — Error: daemon hiccup/);
+  });
+
+  it("adopts only running children of this project", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      children: [sessionInfo("ses_a", "ses_mine"), sessionInfo("ses_b", "ses_theirs")],
+      active: { ses_a: { type: "running" }, ses_b: { type: "running" } },
+      parents: {
+        ses_mine: sessionInfo("ses_mine", undefined as unknown as string, "/work/mine"),
+        ses_theirs: sessionInfo("ses_theirs", undefined as unknown as string, "/work/theirs"),
+      },
+    });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.adopt();
+    expect(tmux.splits.map((s) => s.argv[s.argv.indexOf("-s") + 1])).toEqual(["ses_a"]);
+  });
+
+  it("does not reopen a busy child of another project", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      children: [sessionInfo("ses_child", "ses_theirs")],
+      parents: { ses_theirs: sessionInfo("ses_theirs", undefined as unknown as string, "/work/theirs") },
+    });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(busy("ses_child"));
+    expect(tmux.splits).toEqual([]);
+  });
+
+  it("keeps watching every child when a parent is configured explicitly", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({});
+    const get = vi.spyOn(client.session, "get");
+    const w = createWatcher(
+      deps({ tmux, client, parentID: "ses_p", projectDirectories: ["/work/mine"] }),
+    );
+    await w.dispatch(created("ses_child", "ses_p"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(get).not.toHaveBeenCalled();
   });
 });

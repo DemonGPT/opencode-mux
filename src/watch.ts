@@ -1,4 +1,6 @@
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
+import { realpathSync } from "node:fs";
+import { resolve, sep } from "node:path";
 import type { Layout, PaneCommand } from "./config.js";
 import { childTitle, classifyEvent } from "./session.js";
 import { childSessions, events } from "./server.js";
@@ -20,9 +22,40 @@ export interface WatchDeps {
    */
   themeStyles?: { current(): BorderStyles | null };
   parentID: string | null;
+  /**
+   * Directories this instance's TUI may run in. Only used when no explicit
+   * parent is configured: a subagent is paned only when its parent session
+   * belongs to one of these directories, so concurrent opencode-mux instances
+   * on different projects never pane each other's subagents. Absent → watch
+   * every child session (single-instance behaviour).
+   */
+  projectDirectories?: string[];
   paneArgv?: (sessionID: string) => string[];
   tickEveryMs: number;
   now?: () => number;
+}
+
+/** Resolves symlinks when possible so cwd and daemon-reported paths compare. */
+function normalizeDirectory(path: string): string {
+  let out: string;
+  try {
+    out = realpathSync(path);
+  } catch {
+    out = resolve(path);
+  }
+  return out.length > 1 && out.endsWith(sep) ? out.slice(0, -1) : out;
+}
+
+/**
+ * True when both paths name the same project: equal, or one contains the other.
+ * Containment covers opencode reporting the project root while the wrapper runs
+ * in a subdirectory (and vice versa); component-aware so "/a/proj" and
+ * "/a/proj-2" stay distinct.
+ */
+export function isSameProject(left: string, right: string): boolean {
+  const a = normalizeDirectory(left);
+  const b = normalizeDirectory(right);
+  return a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
 }
 
 export interface Watcher {
@@ -66,6 +99,32 @@ export function createWatcher(deps: WatchDeps): Watcher {
   const paneArgv = deps.paneArgv ?? defaultPaneArgv;
   const now = deps.now ?? Date.now;
   const log = deps.log;
+
+  /**
+   * parent session id → does it belong to this instance's project? Cached per
+   * parent (a session's directory does not change mid-run). Lookups that fail
+   * are not cached, so a transient error does not permanently hide a parent.
+   */
+  const ownedParents = new Map<string, boolean>();
+
+  /**
+   * Whether a subagent's parent session belongs to this instance. Always true
+   * with an explicit parent (the id match already pins it) or without a scope.
+   */
+  const ownsParent = async (parentID: string): Promise<boolean> => {
+    if (deps.parentID !== null || deps.projectDirectories === undefined) return true;
+    const cached = ownedParents.get(parentID);
+    if (cached !== undefined) return cached;
+    try {
+      const info = await deps.client.session.get({ sessionID: parentID });
+      const owned = deps.projectDirectories.some((dir) => isSameProject(info.location.directory, dir));
+      ownedParents.set(parentID, owned);
+      return owned;
+    } catch (error) {
+      log(`scope lookup failed: ${parentID} — ${String(error)}`);
+      return false;
+    }
+  };
 
   const openPane = async (sessionID: string, title: string): Promise<string | null> => {
     const argv = paneArgv(sessionID);
@@ -124,6 +183,7 @@ export function createWatcher(deps: WatchDeps): Watcher {
       const info = children.find((c) => c.id === sessionID);
       if (info === undefined) return;
       if (deps.parentID !== null && info.parentID !== deps.parentID) return;
+      if (info.parentID === undefined || !(await ownsParent(info.parentID))) return;
       await openTracked(info.id, childTitle(info.title, info.id));
     } catch {
       // best-effort: cannot reopen without session info
@@ -172,6 +232,7 @@ export function createWatcher(deps: WatchDeps): Watcher {
           // it again flashed panes at startup (their panes were already closed
           // when they completed).
           if (!(info.id in active)) continue;
+          if (info.parentID === undefined || !(await ownsParent(info.parentID))) continue;
           await openTracked(info.id, childTitle(info.title, info.id));
         }
         await applyTick(now());
@@ -184,7 +245,11 @@ export function createWatcher(deps: WatchDeps): Watcher {
       const cls = classifyEvent(event);
       if (cls.kind === "created") {
         if (cls.parentID === undefined) return;
-        if (deps.parentID !== null && cls.parentID !== deps.parentID) return;
+        if (deps.parentID !== null) {
+          if (cls.parentID !== deps.parentID) return;
+        } else if (!(await ownsParent(cls.parentID))) {
+          return;
+        }
         await openTracked(cls.sessionID, childTitle(cls.title, cls.slug));
         return;
       }

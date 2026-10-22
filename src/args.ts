@@ -6,6 +6,8 @@ export interface ParsedArgs {
   help: boolean;
   version: boolean;
   watch: boolean;
+  /** Internal `--mux-scope` paths forwarded to the watcher (project scoping). */
+  scope: string[];
   passThrough: string[];
 }
 
@@ -14,7 +16,7 @@ const CLOSE_MODES: ReadonlySet<string> = new Set(["auto", "keep"]);
 const PANE_COMMANDS: ReadonlySet<string> = new Set(["mini", "tui"]);
 
 export function parseArgs(argv: string[]): ParsedArgs {
-  const out: ParsedArgs = { flags: {}, help: false, version: false, watch: false, passThrough: [] };
+  const out: ParsedArgs = { flags: {}, help: false, version: false, watch: false, scope: [], passThrough: [] };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === "--mux-watch") {
@@ -100,6 +102,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
         const v = value();
         if (v === null || v === "") throw new Error("opencode-mux: --session-name requires a name");
         out.flags.sessionName = v;
+        break;
+      }
+      case "--mux-scope": {
+        // Internal: the launcher forwards the directories this instance may be
+        // showing (cwd + an explicit opencode <directory> argument) to the
+        // watcher child, which no longer sees the pass-through args.
+        const v = value();
+        if (v === null || v === "") throw new Error("opencode-mux: --mux-scope requires a path");
+        out.scope.push(v);
         break;
       }
       default:

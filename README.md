@@ -27,6 +27,8 @@ itself and the remaining subagent panes re-tile to share the space evenly. The s
   your `~/.tmux.conf`, `~/.config/opencode/cli.json`, or `tui.json`.
 - **Coherent look** — pane borders are styled to match your active opencode
   theme, and the session opts are scoped to the mux session only.
+- **Concurrent instances** — one mux per project, each with its own tmux
+  session and its own subagent panes.
 
 ## Requirements
 
@@ -71,6 +73,9 @@ opencode-mux --layout tiled --model fast
 # Running inside an existing tmux session also works — subagent panes are
 # opened in the session you're already in, and already-running subagents are
 # adopted without a startup flash.
+
+# A second instance (another project, another terminal) is fine: it gets its
+# own tmux session and only panes that project's subagents.
 ```
 
 ### Mux options
@@ -84,7 +89,7 @@ opencode-mux --layout tiled --model fast
 | `--pane-command <cmd>` | Subagent pane frontend: `mini` (minimal UI) or `tui` (full TUI) | `mini` |
 | `--grace <seconds>` | Delay before a finished subagent's pane closes | `1` |
 | `--parent <id>` | Only spawn panes for children of this session | inferred from `-s`/`--session` |
-| `--session-name <name>` | Owned tmux session name (when starting outside tmux) | `mux` |
+| `--session-name <name>` | Base name for the owned tmux session (suffixed when another instance owns it) | `mux` |
 | `-h`, `--help` | Show help | |
 | `--version` | Print the version | |
 
@@ -124,6 +129,25 @@ Precedence: **CLI flags > config file > defaults**.
   grace period). Every pane split and every pane close re-applies the
   configured layout, so the main pane keeps its configured size and the
   subagent panes always split the remaining space evenly.
+
+### Several instances at once
+
+Each instance owns its tmux session, so you can run one per project
+concurrently — in different terminals, all sharing the same opencode
+background service:
+
+- **Own session per instance.** Outside tmux the wrapper takes the configured
+  base name (`mux`) when it is free. If another instance (or a leftover)
+  already owns it, the next name is used and reported:
+  `mux-<project>`, then `mux-<project>-2`, and so on. A window is never
+  shared between instances, and cleanup only ever kills the exact session it
+  created.
+- **Own panes per instance.** Without an explicit `--parent`/`-s`, a watcher
+  only panes subagents whose parent session belongs to *its* directory (the
+  cwd, or an explicit opencode `<directory>` argument). Two instances on
+  different projects therefore never mirror each other's subagents. Inside
+  one project, pin the parent with `--parent <session-id>` when you run two
+  instances side by side.
 
 ## Features
 
