@@ -62,13 +62,24 @@ describe("classifyEvent", () => {
     });
   });
 
+  it("maps server.connected to connected and session.moved to moved", () => {
+    expect(classifyEvent(ev({ type: "server.connected", data: {} }))).toEqual({ kind: "connected" });
+    expect(
+      classifyEvent(
+        ev({
+          type: "session.moved",
+          data: { sessionID: "ses_m", location: { directory: "/work/other" }, projectID: "p" },
+        }),
+      ),
+    ).toEqual({ kind: "moved", sessionID: "ses_m" });
+  });
+
   it("ignores retry status and unrelated events", () => {
     expect(
       classifyEvent(
         ev({ type: "session.status", data: { sessionID: "ses_c", status: { type: "retry", attempt: 1, message: "m", next: 5 } } }),
       ),
     ).toEqual({ kind: "other" });
-    expect(classifyEvent(ev({ type: "server.connected", data: {} }))).toEqual({ kind: "other" });
     expect(classifyEvent(ev({ type: "session.step.ended", data: {} }))).toEqual({ kind: "other" });
   });
 });

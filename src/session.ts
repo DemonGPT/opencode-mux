@@ -4,6 +4,10 @@ export type EventClass =
   | { kind: "created"; sessionID: string; parentID?: string; title?: string; slug: string }
   | { kind: "terminal"; sessionID: string }
   | { kind: "busy"; sessionID: string }
+  /** The daemon (re)connected — possibly after a restart: re-adopt sessions. */
+  | { kind: "connected" }
+  /** A session changed directory, so cached project-scope verdicts are stale. */
+  | { kind: "moved"; sessionID: string }
   | { kind: "other" };
 
 /** Classifies an SDK event into what the watcher reacts to. */
@@ -33,6 +37,13 @@ export function classifyEvent(event: OpenCodeEvent): EventClass {
       if (event.data.status.type === "idle") return { kind: "terminal", sessionID: event.data.sessionID };
       if (event.data.status.type === "busy") return { kind: "busy", sessionID: event.data.sessionID };
       return { kind: "other" };
+    case "server.connected":
+      // Emitted on (re)connect; sessions created while the watcher was
+      // disconnected never reached it as events, so it must adopt again.
+      return { kind: "connected" };
+    case "session.moved":
+      // A session's directory can change, invalidating cached scope verdicts.
+      return { kind: "moved", sessionID: event.data.sessionID };
     default:
       return { kind: "other" };
   }

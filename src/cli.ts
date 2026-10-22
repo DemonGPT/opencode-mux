@@ -182,8 +182,9 @@ export function sessionNameSuffix(cwd: string): string {
  *
  * Later attempts only matter when the earlier names are taken — by another
  * opencode-mux instance running concurrently, or by a session left over from a
- * crash. Colliding instead of sharing is deliberate: each instance owns its
- * session (it kills it on exit) and two TUIs must not share one window.
+ * crash. Colliding instead of sharing is deliberate: two TUIs must not share
+ * one window, and each instance's session is independent — nothing kills it,
+ * it simply ends when its own TUI pane exits (AGENTS.md invariant 7).
  */
 export function sessionNameCandidate(base: string, cwd: string, attempt: number): string {
   if (attempt <= 0) return base;
@@ -196,21 +197,55 @@ export function isSessionNameTaken(result: SpawnResult): boolean {
   return /duplicate session|already exists/i.test(`${result.stderr}\n${result.error ?? ""}`);
 }
 
+/** A tmux session id as printed by `-P -F '#{session_id}'` (`$0`, `$12`, …). */
+const SESSION_ID_PATTERN = /^\$\d+$/;
+
 /**
- * Directories this instance may be showing: its working directory plus an
- * explicit opencode `<directory>` argument from the pass-through args (opencode
- * chdirs there, so its sessions belong to that directory, not our cwd).
- * Used to keep concurrent instances' subagents in their own windows.
+ * The session id tmux printed at creation, or null when stdout is not exactly
+ * an id. Only trailing whitespace is ignored: leading junk, extra lines or
+ * extra text mean the format was not what we asked for, and proximity matters
+ * (a stray `$3` inside noise is not trustworthy). Measured on tmux 3.8 with an
+ * isolated server: an unsupported -F format prints *empty* stdout with rc 0,
+ * so both "no output" and "junk output" are reachable with a successful
+ * new-session.
+ */
+function printedSessionId(stdout: string): string | null {
+  const printed = stdout.trimEnd();
+  return SESSION_ID_PATTERN.test(printed) ? printed : null;
+}
+
+/**
+ * Directories this instance may be showing: its working directory plus at most
+ * one explicit opencode `<directory>` argument from the pass-through args
+ * (opencode chdirs there, so its sessions belong to that directory, not our
+ * cwd). Used to keep concurrent instances' subagents in their own windows.
+ *
+ * Only a *positional* argument counts as that directory: it must not start
+ * with "-" **and** its predecessor must not be a flag token. We cannot know
+ * which opencode flags take a value, so `--some-opt /tmp/other /real/project`
+ * must treat `/tmp/other` as that flag's value (treating it as the directory
+ * would silently scope the watcher to a foreign project — hiding our own
+ * subagents *and* paning theirs). opencode's `<directory>` is documented as a
+ * positional argument; if it could legitimately follow a flag, that flag would
+ * need an explicit rule here rather than widening this one.
+ *
+ * Only the *first* accepted directory is kept: any other positional is far
+ * more likely to be a prompt that happens to name a path, and adding it would
+ * widen the watcher's scope again.
  */
 export function scopeDirectories(passThrough: string[], cwd: string): string[] {
   const dirs = [cwd];
-  for (const arg of passThrough) {
+  for (let i = 0; i < passThrough.length; i++) {
+    const arg = passThrough[i]!;
     if (arg.startsWith("-")) continue;
+    // A token after a flag token may be that flag's value, never a positional.
+    const previous = passThrough[i - 1];
+    if (previous !== undefined && previous.startsWith("-")) continue;
     try {
-      if (statSync(arg).isDirectory()) {
-        const dir = resolve(cwd, arg);
-        if (!dirs.includes(dir)) dirs.push(dir);
-      }
+      if (!statSync(arg).isDirectory()) continue;
+      const dir = resolve(cwd, arg);
+      if (!dirs.includes(dir)) dirs.push(dir);
+      break;
     } catch {
       // not an existing path (a prompt, a value, …)
     }
@@ -246,15 +281,29 @@ export function buildReexecArgv(entryPath: string, originalArgv: string[]): stri
   return [entryPath, ...originalArgv];
 }
 
-/** tmux new-session argv that boots the detached session and its command. */
+/**
+ * tmux new-session argv that boots the detached session and its command.
+ *
+ * `-P -F '#{session_id}'` makes tmux print the new session's id (`$0`, …), which
+ * the caller uses as an exact `-t` target: a bare session *name* would
+ * prefix-match a sibling instance's session if ours disappeared in the
+ * meantime, and tmux session ids are exact by construction.
+ *
+ * Ownership is deliberately NOT propagated through the tmux session
+ * environment: `-e` would leak into every process in the session (and into any
+ * nested opencode-mux run), which would then kill the host session on exit.
+ * There is no ownership marker at all: the session owns itself and ends when
+ * its TUI pane exits, so no session is ever killed explicitly (AGENTS.md
+ * invariant 7 — a kill would also destroy user windows and can resolve to the
+ * wrong session).
+ */
 export function buildNewSessionCommand(input: { entryPath: string; originalArgv: string[]; sessionName: string; cwd: string }): string[] {
   return [
     "new-session",
     "-d",
-    "-e",
-    "MUX_OWNED_SESSION=1",
-    "-e",
-    `MUX_SESSION_NAME=${input.sessionName}`,
+    "-P",
+    "-F",
+    "#{session_id}",
     "-s",
     input.sessionName,
     "-c",
@@ -263,20 +312,37 @@ export function buildNewSessionCommand(input: { entryPath: string; originalArgv:
   ];
 }
 
+/** First `-s`/`--session`/`--session=<v>` value in the pass-through args, else null. */
+function sessionPinValue(passThrough: string[]): string | null {
+  for (let i = 0; i < passThrough.length; i++) {
+    const arg = passThrough[i]!;
+    if (arg === "-s" || arg === "--session") {
+      const next = passThrough[i + 1];
+      if (next !== undefined && !next.startsWith("-")) return next;
+    }
+    if (arg.startsWith("--session=")) return arg.slice("--session=".length);
+  }
+  return null;
+}
+
 async function resolveConfig(parsed: ParsedArgs, env: NodeJS.ProcessEnv): Promise<MuxConfig> {
   if (parsed.flags.parent === undefined) {
     const inferred = parentFromPassThrough(parsed.passThrough);
-    if (inferred !== null) parsed.flags.parent = inferred;
+    if (inferred !== null) {
+      parsed.flags.parent = inferred;
+    } else {
+      // Without a usable parent the instance watches the whole project. Say so
+      // instead of silently widening: a typo'd session id looks like "it just
+      // watches everything". Never fatal, never changes the exit code.
+      const ignored = sessionPinValue(parsed.passThrough);
+      if (ignored !== null && ignored !== "") {
+        process.stderr.write(
+          `opencode-mux: ignoring -s value "${ignored}": not an opencode session id (watching this project instead)\n`,
+        );
+      }
+    }
   }
-  const config = await loadConfig({ path: parsed.configPath, flags: parsed.flags, env });
-  // The launcher may have picked a different name than the configured base when
-  // that name was taken by another instance; the owned session must use it for
-  // its tmux options and cleanup. Only our own launch sets MUX_SESSION_NAME.
-  const ownedName = env.MUX_SESSION_NAME;
-  if (env.MUX_OWNED_SESSION === "1" && ownedName !== undefined && ownedName !== "") {
-    config.sessionName = ownedName;
-  }
-  return config;
+  return loadConfig({ path: parsed.configPath, flags: parsed.flags, env });
 }
 
 async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDeps, generation: ServiceGeneration): Promise<number> {
@@ -290,7 +356,8 @@ async function runWatch(parsed: ParsedArgs, env: NodeJS.ProcessEnv, deps: CliDep
   mkdirSync(dirname(logFile), { recursive: true });
   const append = (line: string): void => {
     try {
-      appendFileSync(logFile, `[${new Date().toISOString()}] ${line}\n`);
+      // Instances share one log file: pid + timestamp make every line attributable.
+      appendFileSync(logFile, `[${new Date().toISOString()}] [${process.pid}] ${line}\n`);
     } catch {
       // log failures are non-fatal
     }
@@ -387,6 +454,10 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
     // refuses duplicate names atomically — so collisions are retried rather
     // than probed.
     let sessionName: string | null = null;
+    /** `-t` target for the session-scoped options; tmux resolves it as a target-pane. */
+    let optionTarget: string | null = null;
+    /** `-t` target for attach; the exact-match "=name" form is accepted here. */
+    let attachTarget: string | null = null;
     let failure: SpawnResult | null = null;
     for (let attempt = 0; attempt < MAX_SESSION_NAME_ATTEMPTS; attempt++) {
       const candidate = sessionNameCandidate(config.sessionName, cwd, attempt);
@@ -400,12 +471,23 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
         .done;
       if (created.ok) {
         sessionName = candidate;
+        // Exact handle for the later -t: tmux printed the session id (`$0`, …).
+        // When stdout is not a clean id (unsupported -F format → empty stdout
+        // with rc 0, or junk), fall back to the name itself. Measured on tmux
+        // 3.8 (isolated server): `set-option -t '=name' …` fails with
+        // "no such session: =name" (rc 1) because set-option resolves a
+        // *target-pane* and only a bare session name works there, while
+        // `attach -t '=name'` resolves fine. So the fallback uses the bare name
+        // for the options and "=name" for attach; the id works for both.
+        const id = printedSessionId(created.stdout);
+        optionTarget = id ?? candidate;
+        attachTarget = id ?? `=${candidate}`;
         break;
       }
       failure = created;
       if (!isSessionNameTaken(created)) break;
     }
-    if (sessionName === null) {
+    if (sessionName === null || optionTarget === null || attachTarget === null) {
       // nodeSpawn reports `error` only when the command could not be started
       // (ENOENT, …); a tmux that ran and failed exits non-zero with the reason
       // on stderr (e.g. "duplicate session: mux"). Surface that instead of
@@ -424,13 +506,17 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
     // Session-scoped appearance, so the mux looks coherent regardless of the
     // user's global config. These touch only our own session — never -g.
     // Failures are non-fatal: attach proceeds and the exit code is unchanged.
-    // `set-option` rejects the "=name" exact-match form (tmux 3.7), so it uses
-    // the bare name; our session exists at this point, so it matches exactly.
-    await deps.spawn(tmuxCommand, ["set-option", "-t", sessionName, "status", "off"]).done;
-    await deps.spawn(tmuxCommand, ["set-option", "-t", sessionName, "mouse", "on"]).done;
-    // "=name" pins the exact session: a bare name would prefix-match another
-    // instance's session if ours disappeared in the meantime.
-    const attached = await deps.spawn(tmuxCommand, ["attach", "-t", `=${sessionName}`], { inherit: true }).done;
+    // The target is the session id captured at creation whenever tmux printed
+    // one: exact by construction, so it can never prefix-match a sibling. With
+    // no usable id the options target the bare session name (the only form
+    // `set-option` resolves for a session) and attach uses the exact-match
+    // "=name" form; a failing set-option there stays non-fatal, as always.
+    await deps.spawn(tmuxCommand, ["set-option", "-t", optionTarget, "status", "off"]).done;
+    await deps.spawn(tmuxCommand, ["set-option", "-t", optionTarget, "mouse", "on"]).done;
+    const attached = await deps.spawn(tmuxCommand, ["attach", "-t", attachTarget], { inherit: true }).done;
+    // No cleanup here. `attach` returns on TUI exit *and* on detach
+    // (prefix+d), and a detached session must keep running. Nothing kills the
+    // session at all: it ends by itself when its TUI pane exits.
     return attached.ok ? 0 : attached.code ?? 1;
   }
 
@@ -457,9 +543,10 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
   const tui = await deps.spawn(opencodeCommand, parsed.passThrough, { inherit: true }).done;
   watcher.kill();
   await watcher.done;
-  if (env.MUX_OWNED_SESSION === "1") {
-    // Exact match, never a prefix match: "mux" must not kill a sibling "mux-2".
-    await deps.spawn(tmuxCommand, ["kill-session", "-t", `=${config.sessionName}`]).done;
-  }
+  // Never kill a session: the session terminates by itself when its TUI pane
+  // exits, this instance may be living in the user's own session, and an
+  // id-resolving kill could even target the host it runs in (without
+  // TMUX_PANE, `display-message '#{session_id}'` means tmux's "current"
+  // session). Killing would also destroy windows the user opened here.
   return tui.ok ? 0 : tui.code ?? 1;
 }

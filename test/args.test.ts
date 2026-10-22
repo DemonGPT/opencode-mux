@@ -39,6 +39,8 @@ describe("parseArgs", () => {
 
   it("rejects unknown mux flags but keeps other unknowns for opencode", () => {
     expect(() => parseArgs(["--mux-bogus"])).toThrow(/unknown flag/);
+    // There is no ownership marker: a leftover --mux-owned is an unknown flag.
+    expect(() => parseArgs(["--mux-owned"])).toThrow(/unknown flag/);
     expect(parseArgs(["--whatever"]).passThrough).toEqual(["--whatever"]);
   });
 

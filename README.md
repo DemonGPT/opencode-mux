@@ -89,7 +89,7 @@ opencode-mux --layout tiled --model fast
 | `--pane-command <cmd>` | Subagent pane frontend: `mini` (minimal UI) or `tui` (full TUI) | `mini` |
 | `--grace <seconds>` | Delay before a finished subagent's pane closes | `1` |
 | `--parent <id>` | Only spawn panes for children of this session | inferred from `-s`/`--session` |
-| `--session-name <name>` | Base name for the owned tmux session (suffixed when another instance owns it) | `mux` |
+| `--session-name <name>` | Base name for this instance's tmux session (suffixed when the name is taken) | `mux` |
 | `-h`, `--help` | Show help | |
 | `--version` | Print the version | |
 
@@ -119,16 +119,26 @@ Precedence: **CLI flags > config file > defaults**.
 
 - **Outside tmux**: opencode-mux creates a detached tmux session named
   `mux` (or `--session-name`), applies session-scoped `status off` and
-  `mouse on`, re-executes itself inside, and attaches. When the main TUI
-  exits, the owned session is cleaned up.
+  `mouse on`, re-executes itself inside, and attaches. Nothing kills that
+  session: it ends when its TUI pane exits, so detaching (`prefix+d`) keeps it
+  running for reattach, and any window you open inside it survives. Ownership
+  is never passed through tmux session environment, so a nested launch (a
+  shell tool, a second window in that session) can never tear its host down.
+  Session options and attach target the session id tmux printed at creation
+  (`new-session -P -F '#{session_id}'`, validated as `$N`), so a stale name can
+  never match another instance's session. When tmux prints no usable id, the
+  fallback targets the bare session name for `set-option` (the only form it
+  resolves) and `=name` for attach; appearance failures stay non-fatal.
 - **Inside tmux**: the wrapper runs as a watcher. It connects to the opencode
   server (same background service you're already using), listens for
   subagent-session events, opens a pane per child session via
   `opencode mini -s <id>`, styles the pane borders to match the active
   opencode theme, and closes panes once their session finishes (after the
-  grace period). Every pane split and every pane close re-applies the
-  configured layout, so the main pane keeps its configured size and the
-  subagent panes always split the remaining space evenly.
+  grace period). If the opencode daemon restarts, the watcher resubscribes
+  after about a second and re-adopts the subagents that are still running.
+  Every pane split and every pane close re-applies the configured layout, so
+  the main pane keeps its configured size and the subagent panes always split
+  the remaining space evenly.
 
 ### Several instances at once
 
@@ -139,15 +149,22 @@ background service:
 - **Own session per instance.** Outside tmux the wrapper takes the configured
   base name (`mux`) when it is free. If another instance (or a leftover)
   already owns it, the next name is used and reported:
-  `mux-<project>`, then `mux-<project>-2`, and so on. A window is never
-  shared between instances, and cleanup only ever kills the exact session it
-  created.
+  `mux-<project>`, then `mux-<project>-2`, and so on. A session is never
+  shared between instances, and nothing ever kills one: it ends when its own
+  TUI pane exits, so a detached session keeps running for reattach.
 - **Own panes per instance.** Without an explicit `--parent`/`-s`, a watcher
   only panes subagents whose parent session belongs to *its* directory (the
   cwd, or an explicit opencode `<directory>` argument). Two instances on
   different projects therefore never mirror each other's subagents. Inside
   one project, pin the parent with `--parent <session-id>` when you run two
-  instances side by side.
+  instances side by side. A `-s` value that is not a session id is reported
+  rather than silently widening the scope.
+- **Own window per instance.** Each instance tags the panes it creates
+  (pane-scoped `@mux-instance`) and re-tiles only windows it has to itself.
+  Running two instances inside one window is not a supported layout — the
+  panes and the layout belong to the window, not to an instance — but it
+  degrades predictably instead of oscillating: the first instance keeps the
+  geometry, and a second instance never clears window-scoped border styles.
 
 ## Features
 
@@ -173,14 +190,17 @@ configured their setup to look like:
 - A `system` theme or an unknown/unresolvable theme results in **no border
   styling** — never wrong colors.
 - Config changes are re-applied live (checked on the watcher tick), and
-  borders are cleared when the theme becomes unresolvable. Zero tmux calls
-  while nothing changed.
+  borders are cleared when the theme becomes unresolvable — unless another
+  instance shares the window, in which case the clear is skipped and retried
+  on the next pane open/close instead. Zero tmux calls while nothing changed.
 
 ### Never touches your setup
 
 All tmux writes are runtime-scoped: window options are applied with `-w`
-(pane-border colors) and session options with `-t <session>` (status/mouse).
-No `-g`, no writes to `~/.tmux.conf`, no changes to your opencode configs.
+(pane-border colors), session options with `-t <session>` (status/mouse), and
+every pane this instance creates is tagged with a pane-scoped `@mux-instance`
+option, so a second instance can tell the window is shared. No `-g`, no writes
+to `~/.tmux.conf`, no changes to your opencode configs.
 
 ## Requirements & compatibility
 

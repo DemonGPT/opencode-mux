@@ -90,6 +90,30 @@ export function defaultPaneArgv(sessionID: string, paneCommand: PaneCommand = "m
   return [...head, "-s", sessionID];
 }
 
+/**
+ * Delay before the watcher subscribes again after the event stream ended or
+ * failed. Fixed on purpose: a stream that fails instantly means the daemon is
+ * gone, so a hot loop is what must be avoided — not a slow retry. The daemon
+ * is reachable again within a second of a restart, so exponential backoff
+ * would only delay the recovery that matters.
+ */
+const RECONNECT_DELAY_MS = 1000;
+
+/** Resolves after `ms`, or right away when `signal` aborts (listener removed). */
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    timer.unref();
+    signal.addEventListener("abort", finish, { once: true });
+  });
+}
+
 /** Wires server events → tracker state machine → tmux actions. */
 export function createWatcher(deps: WatchDeps): Watcher {
   const targetPane = deps.targetPane ?? currentPane(process.env);
@@ -102,10 +126,13 @@ export function createWatcher(deps: WatchDeps): Watcher {
 
   /**
    * parent session id → does it belong to this instance's project? Cached per
-   * parent (a session's directory does not change mid-run). Lookups that fail
-   * are not cached, so a transient error does not permanently hide a parent.
+   * parent (a session's directory rarely changes; `session.moved` invalidates
+   * the entry). Lookups that fail are not cached, so a transient error does not
+   * permanently hide a parent. Capped so a long-lived watcher cannot grow it
+   * without bound.
    */
   const ownedParents = new Map<string, boolean>();
+  const MAX_OWNED_PARENTS = 256;
 
   /**
    * Whether a subagent's parent session belongs to this instance. Always true
@@ -118,12 +145,30 @@ export function createWatcher(deps: WatchDeps): Watcher {
     try {
       const info = await deps.client.session.get({ sessionID: parentID });
       const owned = deps.projectDirectories.some((dir) => isSameProject(info.location.directory, dir));
+      // Evict the oldest entry (Map insertion order) before inserting.
+      while (ownedParents.size >= MAX_OWNED_PARENTS) {
+        const oldest = ownedParents.keys().next();
+        if (oldest.done === true) break;
+        ownedParents.delete(oldest.value);
+      }
       ownedParents.set(parentID, owned);
       return owned;
     } catch (error) {
       log(`scope lookup failed: ${parentID} — ${String(error)}`);
       return false;
     }
+  };
+
+  /**
+   * Shared-window skips already logged, so a split storm in a window that
+   * another instance owns does not spam the log. A skip is not a failure: the
+   * pane exists, only the window geometry was left to the first instance.
+   */
+  const loggedSkips = new Set<string>();
+  const logLayoutSkip = (reason: string): void => {
+    if (loggedSkips.has(reason)) return;
+    loggedSkips.add(reason);
+    log(`layout skipped: ${reason}`);
   };
 
   const openPane = async (sessionID: string, title: string): Promise<string | null> => {
@@ -133,6 +178,15 @@ export function createWatcher(deps: WatchDeps): Watcher {
       log(`action failed: split-window ${argv.join(" ")} — ${result.error ?? "unknown error"}`);
       return null;
     }
+    if (result.layoutError !== undefined) {
+      // The pane exists, only the window could not be shaped: appearance
+      // failures are non-fatal, so log and keep the pane.
+      log(`action failed: layout ${deps.layout} — ${result.layoutError}`);
+    }
+    const skipped = result.layoutSkipped;
+    // A shared window (another opencode-mux instance owns panes here) skips the
+    // window-wide layout deliberately — worth a line, not a failure.
+    if (skipped !== undefined) logLayoutSkip(skipped);
     log(`opened pane ${result.paneId} for session ${sessionID} (${title})`);
     return result.paneId;
   };
@@ -146,23 +200,60 @@ export function createWatcher(deps: WatchDeps): Watcher {
       return;
     }
     deps.tracker.open(sessionID, paneId, now());
+    // Opening a pane is a lifecycle moment: a border clear that tmux skipped
+    // earlier (shared window) gets another chance instead of waiting for the
+    // next theme change.
+    await retryPendingClear();
   };
 
   const applyAction = async (action: TrackerAction): Promise<void> => {
     if (action.kind !== "close") return;
-    const result = await deps.tmux.killPane(action.paneId);
-    if (!result.ok) {
-      log(`action failed: kill-pane ${action.paneId} — ${result.error ?? "unknown error"}`);
+    // A delayed or duplicated terminal event (e.g. the previous turn's
+    // session.execution.succeeded landing after the next execution.started)
+    // can arm a close while the session is mid-turn again. Never kill a pane
+    // whose session is actually running: cancel the close and keep the pane.
+    let active = false;
+    try {
+      const running = await deps.client.session.active();
+      active = action.sessionID in running;
+    } catch (error) {
+      // Fail open: an unreachable lookup must never leak a pane forever.
+      log(`close check failed: ${String(error)}`);
     }
-    // tmux hands the freed cells to a single neighbouring pane, so the remaining
-    // subagent panes end up with uneven sizes (one grows, the others keep their
-    // old size). Re-applying the configured layout re-tiles them equally, and
-    // restores the configured main pane size for main-* layouts. Runs even when
-    // the kill failed: the pane may have exited on its own, and the uneven
-    // window still needs re-tiling. Appearance failures are non-fatal.
-    const relayout = await deps.tmux.relayout({ targetPane, layout: deps.layout, mainPaneSize: deps.mainPaneSize });
-    if (!relayout.ok) {
-      log(`action failed: relayout ${deps.layout} — ${relayout.error ?? "unknown error"}`);
+    if (active) {
+      deps.tracker.markBusy(action.sessionID);
+      return;
+    }
+    // The lookup above is asynchronous and the tick interval is not serialized
+    // with the dispatch loop, so a real busy event can land while it is in
+    // flight: markBusy then turned the state back to open and this close is
+    // stale. Kill only a state that is still closing, with this exact pane.
+    const state = deps.tracker.snapshot().get(action.sessionID);
+    if (state === undefined || state.phase !== "closing" || !state.emitted || state.paneId !== action.paneId) return;
+    try {
+      const result = await deps.tmux.killPane(action.paneId);
+      if (!result.ok) {
+        log(`action failed: kill-pane ${action.paneId} — ${result.error ?? "unknown error"}`);
+      }
+      // tmux hands the freed cells to a single neighbouring pane, so the remaining
+      // subagent panes end up with uneven sizes (one grows, the others keep their
+      // old size). Re-applying the configured layout re-tiles them equally, and
+      // restores the configured main pane size for main-* layouts. Runs even when
+      // the kill failed: the pane may have exited on its own, and the uneven
+      // window still needs re-tiling. Appearance failures are non-fatal.
+      const relayout = await deps.tmux.relayout({ targetPane, layout: deps.layout, mainPaneSize: deps.mainPaneSize });
+      if (!relayout.ok) {
+        log(`action failed: relayout ${deps.layout} — ${relayout.error ?? "unknown error"}`);
+      }
+      // A shared window skips the relayout deliberately: log it once, not as a failure.
+      if (relayout.skipped !== undefined) logLayoutSkip(relayout.skipped);
+      await retryPendingClear();
+    } finally {
+      // The close is done either way: drop the emitted state so the session can
+      // be re-opened (and reopened panes get a fresh close cycle). In a finally
+      // so an adapter that throws on kill-pane/relayout cannot leave a stale
+      // entry behind that blocks the session's next close cycle.
+      deps.tracker.forget(action.sessionID);
     }
   };
 
@@ -192,6 +283,43 @@ export function createWatcher(deps: WatchDeps): Watcher {
 
   /** JSON of the styles last applied to the window (null when none/cleared). */
   let appliedThemeSig: string | null = null;
+  /**
+   * A border clear that tmux skipped because another opencode-mux instance
+   * shares the window. Recorded instead of retried per tick (the "zero tmux
+   * calls when nothing changed" invariant), retried from the pane lifecycle
+   * paths — otherwise the old colours would persist forever.
+   */
+  let pendingClear = false;
+
+  /**
+   * Retries a skipped border clear. Called from the pane lifecycle paths only
+   * (after a split, after a close): a shared window can end at any moment, but
+   * polling it every tick would mean tmux calls on every tick even when nothing
+   * changed. Re-resolves the theme, so a retry never clears borders the current
+   * theme wants.
+   */
+  const retryPendingClear = async (): Promise<void> => {
+    if (!pendingClear || deps.themeStyles === undefined) return;
+    let styles: BorderStyles | null;
+    try {
+      styles = deps.themeStyles.current();
+    } catch (error) {
+      log(`styling failed: ${String(error)}`);
+      return; // keep pending: try again on the next lifecycle event
+    }
+    if (styles !== null) {
+      // The theme came back: drop the pending clear and let syncTheme apply it
+      // on the next tick instead of stripping the colours the user just chose.
+      pendingClear = false;
+      return;
+    }
+    const result = await deps.tmux.clearBorderStyles(targetPane);
+    if (!result.ok) {
+      log(`styling failed: clear — ${result.error ?? "unknown error"}`);
+      return;
+    }
+    pendingClear = result.skipped !== undefined;
+  };
 
   /**
    * Applies the resolved theme's border styles, or clears them when the theme
@@ -215,6 +343,9 @@ export function createWatcher(deps: WatchDeps): Watcher {
     if (styles === null) {
       const result = await deps.tmux.clearBorderStyles(targetPane);
       if (!result.ok) log(`styling failed: clear — ${result.error ?? "unknown error"}`);
+      // A skipped clear did not happen (shared window): remember it for the
+      // lifecycle paths instead of memoizing it as applied.
+      else pendingClear = result.skipped !== undefined;
       return;
     }
     const result = await deps.tmux.applyBorderStyles(targetPane, styles);
@@ -243,6 +374,17 @@ export function createWatcher(deps: WatchDeps): Watcher {
 
     async dispatch(event) {
       const cls = classifyEvent(event);
+      if (cls.kind === "connected") {
+        // The event stream can reconnect (daemon restart); sessions created
+        // during the disconnect are invisible unless we adopt again.
+        log("server connected: re-adopting");
+        await watcher.adopt();
+        return;
+      }
+      if (cls.kind === "moved") {
+        ownedParents.delete(cls.sessionID);
+        return;
+      }
       if (cls.kind === "created") {
         if (cls.parentID === undefined) return;
         if (deps.parentID !== null) {
@@ -286,18 +428,36 @@ export function createWatcher(deps: WatchDeps): Watcher {
           appliedThemeSig = "error";
         }
       }
+      // One tick interval for the whole watcher lifetime: it must stay alive
+      // across reconnects and is cleared only when the loop below is done.
       const timer = setInterval(() => void watcher.tick(now()), deps.tickEveryMs);
       timer.unref();
-      signal.addEventListener("abort", () => clearInterval(timer), { once: true });
       try {
+        // Startup adopt guarantees panes for already-running children even if
+        // the first subscribe fails, and is idempotent (the tracker reserve
+        // guard blocks duplicates when the connect event adopts again).
         await watcher.adopt();
-        const stream = await events(deps.client, signal);
-        for await (const event of stream) {
-          await watcher.dispatch(event);
-          await watcher.tick(now());
+        // Both SDK generations wrap subscribe in SharedEvents.make, which
+        // finishes its subscribers when the stream ends or errors — it does not
+        // reconnect. Without this loop the watcher would exit on the first
+        // daemon restart and stay blind for the rest of the TUI's life.
+        while (!signal.aborted) {
+          let failure = "event stream ended";
+          try {
+            const stream = await events(deps.client, signal);
+            for await (const event of stream) {
+              await watcher.dispatch(event);
+              await watcher.tick(now());
+            }
+          } catch (error) {
+            failure = String(error);
+          }
+          if (signal.aborted) break;
+          log(`watcher error: ${failure}`);
+          // Exactly one subscription is active at a time: the previous one has
+          // finished before the delay, and the next one starts after it.
+          await sleep(RECONNECT_DELAY_MS, signal);
         }
-      } catch (error) {
-        if (!signal.aborted) log(`watcher error: ${String(error)}`);
       } finally {
         clearInterval(timer);
       }

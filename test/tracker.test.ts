@@ -26,7 +26,7 @@ describe("PaneTracker", () => {
     t.reserve("ses_a");
     t.open("ses_a", "paneX", 0);
     expect(t.markTerminal("ses_a", 1_000)).toBeNull();
-    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 16_000 });
+    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 16_000, emitted: false });
     expect(t.tick(15_999)).toEqual([]);
     expect(t.tick(16_000)).toEqual([{ kind: "close", sessionID: "ses_a", paneId: "paneX" }]);
     expect(t.tick(100_000)).toEqual([]);
@@ -49,7 +49,7 @@ describe("PaneTracker", () => {
     t.markTerminal("ses_a", 200);
     t.markBusy("ses_a");
     t.markTerminal("ses_a", 500);
-    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 15_500 });
+    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 15_500, emitted: false });
     expect(t.tick(15_500)).toEqual([{ kind: "close", sessionID: "ses_a", paneId: "paneX" }]);
   });
 
@@ -59,7 +59,7 @@ describe("PaneTracker", () => {
     expect(t.markTerminal("ses_a", 100)).toBeNull();
     expect(t.snapshot().get("ses_a")).toEqual({ phase: "pending", terminal: true });
     expect(t.open("ses_a", "paneX", 100)).toEqual({ kind: "open", sessionID: "ses_a", paneId: "paneX" });
-    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 100 });
+    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 100, emitted: false });
     expect(t.tick(100)).toEqual([{ kind: "close", sessionID: "ses_a", paneId: "paneX" }]);
   });
 
@@ -80,7 +80,7 @@ describe("PaneTracker", () => {
     t.open("ses_b", "paneY", 0);
     t.markTerminal("ses_b", 0);
     t.markTerminal("ses_b", 10_000);
-    expect(t.snapshot().get("ses_b")).toEqual({ phase: "closing", paneId: "paneY", closeAt: 15_000 });
+    expect(t.snapshot().get("ses_b")).toEqual({ phase: "closing", paneId: "paneY", closeAt: 15_000, emitted: false });
     expect(t.tick(15_000)).toEqual([{ kind: "close", sessionID: "ses_b", paneId: "paneY" }]);
     expect(t.markBusy("ses_b")).toBeNull();
     expect(t.tick(20_000)).toEqual([]);
@@ -101,5 +101,32 @@ describe("PaneTracker", () => {
     t.remove("ses_r");
     expect(t.snapshot().get("ses_r")).toBeUndefined();
     expect(t.reserve("ses_r")).toBe(true);
+  });
+
+  it("emits one close per due session even when ticked repeatedly, and forget drops it", () => {
+    const t = new PaneTracker(auto);
+    t.reserve("ses_a");
+    t.open("ses_a", "paneX", 0);
+    t.markTerminal("ses_a", 1_000);
+    expect(t.tick(16_000)).toEqual([{ kind: "close", sessionID: "ses_a", paneId: "paneX" }]);
+    // The state survives the emitted close (so busy can still cancel it), but
+    // the same or a later tick never emits a second close.
+    expect(t.snapshot().get("ses_a")).toEqual({ phase: "closing", paneId: "paneX", closeAt: 16_000, emitted: true });
+    expect(t.tick(16_000)).toEqual([]);
+    expect(t.tick(100_000)).toEqual([]);
+    t.forget("ses_a");
+    expect(t.snapshot().get("ses_a")).toBeUndefined();
+    expect(t.tick(100_000)).toEqual([]);
+  });
+
+  it("a busy session can still cancel an already-emitted close", () => {
+    const t = new PaneTracker(auto);
+    t.reserve("ses_a");
+    t.open("ses_a", "paneX", 0);
+    t.markTerminal("ses_a", 0);
+    expect(t.tick(16_000)).toHaveLength(1);
+    t.markBusy("ses_a");
+    expect(t.snapshot().get("ses_a")).toEqual({ phase: "open", paneId: "paneX", closeAt: null });
+    expect(t.tick(100_000)).toEqual([]);
   });
 });

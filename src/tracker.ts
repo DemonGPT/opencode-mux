@@ -3,7 +3,7 @@ import type { ClosePanes } from "./config.js";
 export type PaneState =
   | { phase: "pending"; terminal: boolean }
   | { phase: "open"; paneId: string; closeAt: number | null }
-  | { phase: "closing"; paneId: string; closeAt: number }
+  | { phase: "closing"; paneId: string; closeAt: number; emitted: boolean }
   | { phase: "kept"; paneId: string };
 
 export type TrackerAction =
@@ -38,12 +38,21 @@ export class PaneTracker {
     this.states.delete(sessionID);
   }
 
+  /**
+   * Drops a session's state after its close was handled. Separate from
+   * `tick` on purpose: the state must survive the emitted close so a session
+   * that turns out to still be running can cancel the close again.
+   */
+  forget(sessionID: string): void {
+    this.states.delete(sessionID);
+  }
+
   /** Resolves a pending session into an open pane. Returns the open action. */
   open(sessionID: string, paneId: string, now: number): TrackerAction | null {
     const st = this.states.get(sessionID);
     if (st === undefined || st.phase !== "pending") return null;
     if (st.terminal) {
-      this.states.set(sessionID, { phase: "closing", paneId, closeAt: now });
+      this.states.set(sessionID, { phase: "closing", paneId, closeAt: now, emitted: false });
     } else {
       this.states.set(sessionID, { phase: "open", paneId, closeAt: null });
     }
@@ -60,7 +69,7 @@ export class PaneTracker {
     }
     if (st.phase === "open") {
       if (this.opts.closePanes === "auto") {
-        this.states.set(sessionID, { phase: "closing", paneId: st.paneId, closeAt: now + this.opts.graceMs });
+        this.states.set(sessionID, { phase: "closing", paneId: st.paneId, closeAt: now + this.opts.graceMs, emitted: false });
       } else {
         this.states.set(sessionID, { phase: "kept", paneId: st.paneId });
       }
@@ -77,12 +86,19 @@ export class PaneTracker {
     return null;
   }
 
-  /** Emits due close actions and forgets those sessions. */
+  /**
+   * Emits due close actions exactly once per closing session. The state is
+   * kept (marked emitted, never deleted) so a session that is actually still
+   * running can cancel the close via `markBusy`; the watcher calls `forget`
+   * once it handled the close.
+   */
   tick(now: number): TrackerAction[] {
     const actions: TrackerAction[] = [];
     for (const [sessionID, st] of this.states) {
-      if (st.phase === "closing" && st.closeAt <= now) {
-        this.states.delete(sessionID);
+      if (st.phase === "closing" && !st.emitted && st.closeAt <= now) {
+        // Replace the entry to record the emission without changing the
+        // deadline, so a repeated tick cannot emit a second close.
+        this.states.set(sessionID, { ...st, emitted: true });
         actions.push({ kind: "close", sessionID, paneId: st.paneId });
       }
     }
