@@ -247,6 +247,39 @@ describe("main", () => {
     expect(tmuxCalls.at(-1)).toEqual(["attach", "-t", "mux"]);
   });
 
+  it("outside tmux: a failing new-session reports tmux's stderr instead of 'unknown error'", async () => {
+    const { spawn, calls } = fakeSpawn({
+      tmux: (args) =>
+        args[0] === "new-session" ? { ok: false, code: 1, stderr: "duplicate session: mux\n" } : {},
+    });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      const code = await main(
+        [],
+        deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js" }),
+      );
+      expect(code).toBe(1);
+      expect(err.mock.calls.join("")).toBe("opencode-mux: failed to start tmux session: duplicate session: mux\n");
+      // No session to attach to, no session options to apply.
+      expect(calls.filter((c) => c.command === "tmux").map((c) => c.args[0])).toEqual(["-V", "new-session"]);
+    } finally {
+      err.mockRestore();
+    }
+  });
+
+  it("outside tmux: a failing new-session without stderr reports the exit code", async () => {
+    const { spawn } = fakeSpawn({ tmux: (args) => (args[0] === "new-session" ? { ok: false, code: 3 } : {}) });
+    const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    try {
+      expect(
+        await main([], deps({ spawn, env: { XDG_CONFIG_HOME: "/nonexistent", XDG_STATE_HOME: "/tmp/omux" }, entryPath: "/x/dist/bin.js" })),
+      ).toBe(1);
+      expect(err.mock.calls.join("")).toBe("opencode-mux: failed to start tmux session: tmux exited with code 3\n");
+    } finally {
+      err.mockRestore();
+    }
+  });
+
   it("--mux-watch outside tmux: exits 1 with the TMUX_PANE hint", async () => {
     const { spawn } = fakeSpawn();
     const err = vi.spyOn(process.stderr, "write").mockImplementation(() => true);

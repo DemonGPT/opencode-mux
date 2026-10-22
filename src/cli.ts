@@ -315,7 +315,14 @@ export async function main(argv: string[], deps: CliDeps): Promise<number> {
       }))
       .done;
     if (!created.ok) {
-      process.stderr.write(`opencode-mux: failed to start tmux session: ${created.error ?? "unknown error"}\n`);
+      // nodeSpawn reports `error` only when the command could not be started
+      // (ENOENT, …); a tmux that ran and failed exits non-zero with the reason
+      // on stderr (e.g. "duplicate session: mux"). Surface that instead of
+      // printing "unknown error".
+      const detail =
+        created.error ??
+        (created.stderr.trim() !== "" ? created.stderr.trim() : `tmux exited with code ${created.code ?? "unknown"}`);
+      process.stderr.write(`opencode-mux: failed to start tmux session: ${detail}\n`);
       return 1;
     }
     // Session-scoped appearance, so the mux looks coherent regardless of the
