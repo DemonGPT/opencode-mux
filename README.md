@@ -50,7 +50,7 @@ To use it as your default `opencode`:
 alias opencode="opencode-mux"
 ```
 
-(binaries are `opencode-mux`, version `1.3.0`)
+(binaries are `opencode-mux`, version `1.3.1`)
 
 ## Usage
 
@@ -153,8 +153,11 @@ background service:
   shared between instances, and nothing ever kills one: it ends when its own
   TUI pane exits, so a detached session keeps running for reattach.
 - **Own panes per instance.** Without an explicit `--parent`/`-s`, a watcher
-  only panes subagents whose parent session belongs to *its* directory (the
-  cwd, or an explicit opencode `<directory>` argument). Two instances on
+  only panes subagents that belong to *its* project. Ownership follows the
+  session's opencode project binding (falling back to the cwd, or an explicit
+  opencode `<directory>` argument, and walking the parent chain to its root),
+  so an agent that `cd`s into a worktree outside the project root — or a
+  session that was moved — keeps its subagent panes. Two instances on
   different projects therefore never mirror each other's subagents. Inside
   one project, pin the parent with `--parent <session-id>` when you run two
   instances side by side. A `-s` value that is not a session id is reported

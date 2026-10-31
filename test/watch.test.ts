@@ -20,13 +20,13 @@ const connected = (): OpenCodeEvent => ({ type: "server.connected", data: {} }) 
 const moved = (sessionID: string): OpenCodeEvent =>
   ({ type: "session.moved", data: { sessionID } }) as unknown as OpenCodeEvent;
 
-const sessionInfo = (id: string, parentID: string, directory = "/x"): SessionInfo =>
-  ({ id, parentID, projectID: "p", cost: {}, tokens: {}, time: { created: 1, updated: 1 }, location: { kind: "local", directory, project: "p" } }) as unknown as SessionInfo;
+const sessionInfo = (id: string, parentID: string, directory = "/x", projectID = "p"): SessionInfo =>
+  ({ id, parentID, projectID, cost: {}, tokens: {}, time: { created: 1, updated: 1 }, location: { kind: "local", directory, project: projectID } }) as unknown as SessionInfo;
 
-function makeClient(over: { active?: Record<string, { type: "running" }>; activeImpl?: () => Promise<Record<string, { type: "running" }>>; children?: SessionInfo[]; parents?: Record<string, SessionInfo>; getError?: string; stream?: (opts: { signal?: AbortSignal }) => AsyncIterable<OpenCodeEvent> }) {
+function makeClient(over: { active?: Record<string, { type: "running" }>; activeImpl?: () => Promise<Record<string, { type: "running" }>>; children?: SessionInfo[]; parents?: Record<string, SessionInfo>; getError?: string; projects?: Array<{ id: string; canonical: string }>; projectError?: string; stream?: (opts: { signal?: AbortSignal }) => AsyncIterable<OpenCodeEvent> }) {
   const subscribe = (opts: { signal?: AbortSignal }) =>
     over.stream ? over.stream(opts) : (async function* () {})();
-  return {
+  const client = {
     session: {
       async list() {
         return { data: over.children ?? [], cursor: { next: null, previous: null } };
@@ -43,6 +43,16 @@ function makeClient(over: { active?: Record<string, { type: "running" }>; active
       },
     },
     event: { subscribe },
+  };
+  if (over.projects === undefined && over.projectError === undefined) return client as unknown as OpenCodeClient;
+  return {
+    ...client,
+    project: {
+      async list() {
+        if (over.projectError !== undefined) throw new Error(over.projectError);
+        return over.projects ?? [];
+      },
+    },
   } as unknown as OpenCodeClient;
 }
 
@@ -1009,5 +1019,124 @@ describe("createWatcher with project scoping (concurrent instances)", () => {
     expect(tmuxB.kills).toEqual(["%b1"]);
     expect(tmuxA.relayouts).toEqual([{ targetPane: "%a", layout: "main-vertical", mainPaneSize: undefined }]);
     expect(tmuxB.relayouts).toEqual([{ targetPane: "%b", layout: "main-vertical", mainPaneSize: undefined }]);
+  });
+});
+
+describe("createWatcher project scoping across directory drift", () => {
+  const scoped = (over: Partial<Parameters<typeof createWatcher>[0]> = {}) =>
+    deps({ parentID: null, projectDirectories: ["/work/mine"], ...over });
+
+  it("panes a subagent whose parent cd'd into an out-of-tree worktree (same project id)", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      projects: [{ id: "proj", canonical: "/work/mine" }],
+      parents: { ses_p: sessionInfo("ses_p", undefined as unknown as string, "/elsewhere/wt", "proj") },
+    });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_c", "ses_p"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tmux.splits[0]!.argv).toContain("ses_c");
+  });
+
+  it("keeps paning after session.moved reports the worktree directory", async () => {
+    const tmux = makeTmux({ paneIds: ["%1", "%2"] });
+    const parents: Record<string, SessionInfo> = {
+      ses_p: sessionInfo("ses_p", undefined as unknown as string, "/work/mine", "proj"),
+    };
+    const client = makeClient({ parents, projects: [{ id: "proj", canonical: "/work/mine" }] });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_a", "ses_p"));
+    expect(tmux.splits).toHaveLength(1);
+
+    // The agent cd'ed into a worktree outside the project root: same project
+    // binding, different directory. The verdict must not flip.
+    parents.ses_p = sessionInfo("ses_p", undefined as unknown as string, "/elsewhere/wt", "proj");
+    await w.dispatch(moved("ses_p"));
+    await w.dispatch(created("ses_b", "ses_p"));
+    expect(tmux.splits).toHaveLength(2);
+    expect(tmux.splits[1]!.argv).toContain("ses_b");
+  });
+
+  it("follows the parent chain to a session inside the project", async () => {
+    // No project list (fallback path): the intermediate session's directory has
+    // drifted out of the project, the root is still inside it.
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      parents: {
+        ses_mid: sessionInfo("ses_mid", "ses_root", "/elsewhere/wt", "other"),
+        ses_root: sessionInfo("ses_root", undefined as unknown as string, "/work/mine/packages/web", "other"),
+      },
+    });
+    const get = vi.spyOn(client.session, "get");
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_grand", "ses_mid"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tmux.splits[0]!.argv).toContain("ses_grand");
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not inherit ownership from a chain that ends outside the project", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      parents: {
+        ses_mid: sessionInfo("ses_mid", "ses_root", "/elsewhere/a", "other"),
+        ses_root: sessionInfo("ses_root", undefined as unknown as string, "/elsewhere/b", "other"),
+      },
+    });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_grand", "ses_mid"));
+    expect(tmux.splits).toEqual([]);
+  });
+
+  it("stops on a cyclic parent chain instead of walking forever", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      parents: {
+        ses_a: sessionInfo("ses_a", "ses_b", "/elsewhere/a", "other"),
+        ses_b: sessionInfo("ses_b", "ses_a", "/elsewhere/b", "other"),
+      },
+    });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_child", "ses_a"));
+    expect(tmux.splits).toEqual([]);
+  });
+
+  it("matches the deepest project a directory belongs to", async () => {
+    // $HOME is an opencode project too; a directory inside a repository must
+    // not inherit the parent project's sessions as well.
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      projects: [
+        { id: "home", canonical: "/home/me" },
+        { id: "proj", canonical: "/home/me/proj" },
+      ],
+      parents: {
+        ses_home: sessionInfo("ses_home", undefined as unknown as string, "/home/elsewhere", "home"),
+        ses_proj: sessionInfo("ses_proj", undefined as unknown as string, "/elsewhere/wt", "proj"),
+      },
+    });
+    const w = createWatcher(deps({ parentID: null, projectDirectories: ["/home/me/proj"], tmux, client }));
+    await w.dispatch(created("ses_a", "ses_home"));
+    await w.dispatch(created("ses_b", "ses_proj"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tmux.splits[0]!.argv).toContain("ses_b");
+  });
+
+  it("falls back to directory matching when the project list fails", async () => {
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const logs: string[] = [];
+    const client = makeClient({
+      projectError: "daemon hiccup",
+      parents: {
+        ses_mine: sessionInfo("ses_mine", undefined as unknown as string, "/work/mine", "proj"),
+        ses_theirs: sessionInfo("ses_theirs", undefined as unknown as string, "/elsewhere/wt", "proj"),
+      },
+    });
+    const w = createWatcher(scoped({ tmux, client, log: (l) => logs.push(l) }));
+    await w.dispatch(created("ses_a", "ses_mine"));
+    await w.dispatch(created("ses_b", "ses_theirs"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tmux.splits[0]!.argv).toContain("ses_a");
+    expect(logs.join("\n")).toMatch(/scope project lookup failed: Error: daemon hiccup/);
   });
 });

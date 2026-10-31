@@ -2,7 +2,7 @@
 
 ## Project
 
-**opencode-mux** (npm `opencode-mux`, v1.3.0, MIT): a drop-in wrapper for
+**opencode-mux** (npm `opencode-mux`, v1.3.1, MIT): a drop-in wrapper for
 opencode v2 that opens tmux panes for subagent sessions automatically.
 Node >= 20, TypeScript, ESM (`"type": "module"`), built with `tsc`, tested
 with Vitest. No runtime framework. Package ships only `dist/`
@@ -16,7 +16,7 @@ with Vitest. No runtime framework. Package ships only `dist/`
 | `src/cli.ts` | Orchestration: tmux/opencode version gates, session creation (collision-safe naming, session-id capture for `-t`/attach, see concurrency invariant), watcher spawn, `--mux-watch` path |
 | `src/args.ts` | Flag parsing: mux flags consumed, everything else passed through to opencode; `--mux-*` unknown flags error |
 | `src/config.ts` | `opencode-mux.conf` (XDG-aware) loading; auto-creates with defaults; precedence flags > file > defaults; unknown keys ignored |
-| `src/watch.ts` | Watcher: server events → pane lifecycle; optional project scoping (`projectDirectories`, see concurrency invariant); `defaultPaneArgv(sessionID, paneCommand)` = `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", sessionID]` for `mini`, `["opencode", "-s", sessionID]` for `tui` (default `paneCommand` = `"mini"`) |
+| `src/watch.ts` | Watcher: server events → pane lifecycle; optional project scoping (`projectDirectories` + project-id/lineage matching, see concurrency invariant); `defaultPaneArgv(sessionID, paneCommand)` = `["env", "BUN_CONFIG_HTTP_IDLE_TIMEOUT=0", "opencode", "mini", "-s", sessionID]` for `mini`, `["opencode", "-s", sessionID]` for `tui` (default `paneCommand` = `"mini"`) |
 | `src/tracker.ts` | `PaneTracker` state machine: pending → open → closing (grace; emitted exactly once, cancellable by `markBusy`) → forgotten; `kept` for `closePanes: keep`. No closed phase — the watcher `forget`s the entry after handling the close |
 | `src/tmux.ts` | Tmux adapter: split-window (+ pane-scoped `@mux-instance` tag), kill-pane, `relayout` (re-apply the configured layout, used after a pane closes), window-scoped border styles (`-w`), `windowInstances` probe that skips layout and border clears in a window another instance shares, `currentPane` from `TMUX_PANE` |
 | `src/theme.ts` | Theme resolution + mtime-cached provider (`createThemeStyles`) |
@@ -99,8 +99,17 @@ with Vitest. No runtime framework. Package ships only `dist/`
      re-tiling over each other on every event.
    - A watcher **without an explicit parent** must only pane subagents whose
      parent session belongs to its own project (`projectDirectories` =
-     cwd + an explicit opencode `<directory>` arg, matched with
-     `isSameProject`: equal or ancestor/descendant). Never reintroduce global
+     cwd + an explicit opencode `<directory>` arg). Ownership is decided by
+     the session's **opencode project id** when the daemon exposes one
+     (`project.list`, deepest matching project per directory), because a
+     session keeps its project binding across a `cd` into a worktree outside
+     the project root — the binding is durable, the directory is not. The
+     `isSameProject` directory check (equal or ancestor/descendant) remains the
+     fallback for a missing project list or an unknown directory, and the
+     parent chain is walked to its root so a session whose own directory
+     drifted out keeps printing panes. Verdicts are cached per session id
+     (capped at 256, FIFO); `session.moved` invalidates only the moved entry —
+     descendants keep theirs deliberately. Never reintroduce global
      watch-all: two instances would open panes for each other's subagents.
    - An explicit `--parent` pins the scope and skips directory matching. A
      pass-through `-s`/`--session` pins it too, but only when the value starts
@@ -130,9 +139,13 @@ with Vitest. No runtime framework. Package ships only `dist/`
   `adopt()` again — so a daemon restart does not leave the watcher blind for
   the rest of the TUI's life. One subscription is active at a time, and an
   abort exits promptly. Without an explicit parent, only children of sessions
-  in this project get panes (concurrent instances; parent directory lookups
-  via `session.get` are cached per parent id, capped at 256 entries and
-  invalidated on `session.moved`).
+  in this project get panes (concurrent instances). Ownership is the session's
+  opencode project id (deepest `project.list` match per directory), with the
+  `isSameProject` directory check as fallback and the parent chain walked to
+  its root — a session whose directory drifted into an out-of-tree worktree is
+  still ours. Lookups are cached per session id, capped at 256 entries;
+  `session.moved` invalidates only the moved entry, so descendants keep their
+  verdict.
 - The watcher log is shared by all instances
   (`$XDG_STATE_HOME/opencode-mux/watch.log`); lines are appended atomically and
   carry the writing pid (`[<iso>] [<pid>] …`) so concurrent instances can be

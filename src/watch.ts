@@ -1,4 +1,4 @@
-import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
+import type { OpenCodeClient, OpenCodeEvent, SessionInfo } from "@opencode/client";
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import type { Layout, PaneCommand } from "./config.js";
@@ -25,9 +25,11 @@ export interface WatchDeps {
   /**
    * Directories this instance's TUI may run in. Only used when no explicit
    * parent is configured: a subagent is paned only when its parent session
-   * belongs to one of these directories, so concurrent opencode-mux instances
-   * on different projects never pane each other's subagents. Absent → watch
-   * every child session (single-instance behaviour).
+   * belongs to this project, so concurrent opencode-mux instances on different
+   * projects never pane each other's subagents. Ownership is resolved through
+   * the session's opencode project id first and these directories second, so a
+   * session that `cd`ed into a worktree outside the roots stays owned. Absent →
+   * watch every child session (single-instance behaviour).
    */
   projectDirectories?: string[];
   paneArgv?: (sessionID: string) => string[];
@@ -125,38 +127,108 @@ export function createWatcher(deps: WatchDeps): Watcher {
   const log = deps.log;
 
   /**
-   * parent session id → does it belong to this instance's project? Cached per
-   * parent (a session's directory rarely changes; `session.moved` invalidates
-   * the entry). Lookups that fail are not cached, so a transient error does not
-   * permanently hide a parent. Capped so a long-lived watcher cannot grow it
-   * without bound.
+   * Session id → does it belong to this instance's project? Cached per session
+   * (a session's directory rarely changes; `session.moved` invalidates the
+   * moved entry only). Lookups that fail are not cached, so a transient error
+   * does not permanently hide a session. Capped so a long-lived watcher cannot
+   * grow it without bound.
    */
   const ownedParents = new Map<string, boolean>();
   const MAX_OWNED_PARENTS = 256;
 
+  /** Ancestor levels walked for ownership; also stops a cyclic parent chain. */
+  const MAX_SCOPE_DEPTH = 16;
+
+  /** Bounded FIFO insert shared by every scope verdict. */
+  const rememberScope = (sessionID: string, owned: boolean): void => {
+    while (ownedParents.size >= MAX_OWNED_PARENTS) {
+      const oldest = ownedParents.keys().next();
+      if (oldest.done === true) break;
+      ownedParents.delete(oldest.value);
+    }
+    ownedParents.set(sessionID, owned);
+  };
+
   /**
-   * Whether a subagent's parent session belongs to this instance. Always true
-   * with an explicit parent (the id match already pins it) or without a scope.
+   * opencode binds every session to a project id, and a session keeps that
+   * binding when its directory changes — an agent `cd`ing into a worktree
+   * outside the project root, or a TUI directory switch. That binding survives
+   * exactly the drift a path comparison cannot follow, so it decides ownership
+   * whenever the daemon exposes it; `isSameProject` stays as the fallback
+   * (legacy daemon, unavailable project list, or a directory the daemon does
+   * not know as a project yet).
+   *
+   * Resolved once per watcher: a project the daemon does not know yet only
+   * matters for a directory the path check already covers, so retrying buys
+   * nothing. A failed lookup is memoized for the same reason — one shared
+   * daemon call must not become one request per subagent event.
    */
-  const ownsParent = async (parentID: string): Promise<boolean> => {
-    if (deps.parentID !== null || deps.projectDirectories === undefined) return true;
-    const cached = ownedParents.get(parentID);
-    if (cached !== undefined) return cached;
-    try {
-      const info = await deps.client.session.get({ sessionID: parentID });
-      const owned = deps.projectDirectories.some((dir) => isSameProject(info.location.directory, dir));
-      // Evict the oldest entry (Map insertion order) before inserting.
-      while (ownedParents.size >= MAX_OWNED_PARENTS) {
-        const oldest = ownedParents.keys().next();
-        if (oldest.done === true) break;
-        ownedParents.delete(oldest.value);
+  let scopedProjectIDs: Promise<Set<string>> | undefined;
+  const projectIDsInScope = (): Promise<Set<string>> => {
+    scopedProjectIDs ??= (async () => {
+      const ids = new Set<string>();
+      const project = deps.client.project;
+      if (project === undefined || typeof project.list !== "function") return ids;
+      try {
+        const projects = await project.list();
+        for (const dir of deps.projectDirectories ?? []) {
+          // Deepest match wins: a directory inside a repository must not also
+          // pull in a parent "project" (e.g. $HOME) that hosts unrelated work.
+          let best: (typeof projects)[number] | undefined;
+          for (const candidate of projects) {
+            if (!isSameProject(candidate.canonical, dir)) continue;
+            if (best === undefined || candidate.canonical.length > best.canonical.length) best = candidate;
+          }
+          if (best !== undefined) ids.add(best.id);
+        }
+      } catch (error) {
+        log(`scope project lookup failed: ${String(error)}`);
       }
-      ownedParents.set(parentID, owned);
-      return owned;
+      return ids;
+    })();
+    return scopedProjectIDs;
+  };
+
+  /** Whether a session's own identity (project binding, else directory) is in scope. */
+  const inScope = async (info: SessionInfo): Promise<boolean> => {
+    const ids = await projectIDsInScope();
+    if (info.projectID !== undefined && ids.has(info.projectID)) return true;
+    return (deps.projectDirectories ?? []).some((dir) => isSameProject(info.location.directory, dir));
+  };
+
+  /**
+   * Whether a session belongs to this instance. Always true with an explicit
+   * parent (the id match already pins it) or without a scope.
+   *
+   * Ownership follows the lineage: when a session's own directory has drifted
+   * out of the project (an agent working in a worktree outside the project
+   * root), it is still ours as long as the parent chain leads back to a session
+   * that belongs to this project. Lineage is the actual relationship between a
+   * TUI and its subagents; the directory was only ever a proxy, and a `cd`
+   * breaks it.
+   */
+  const ownsParent = async (sessionID: string, depth = 0): Promise<boolean> => {
+    if (deps.parentID !== null || deps.projectDirectories === undefined) return true;
+    const cached = ownedParents.get(sessionID);
+    if (cached !== undefined) return cached;
+    let info: SessionInfo;
+    try {
+      info = await deps.client.session.get({ sessionID });
     } catch (error) {
-      log(`scope lookup failed: ${parentID} — ${String(error)}`);
+      log(`scope lookup failed: ${sessionID} — ${String(error)}`);
       return false;
     }
+    if (await inScope(info)) {
+      rememberScope(sessionID, true);
+      return true;
+    }
+    if (info.parentID === undefined || depth >= MAX_SCOPE_DEPTH) {
+      rememberScope(sessionID, false);
+      return false;
+    }
+    const inherited = await ownsParent(info.parentID, depth + 1);
+    rememberScope(sessionID, inherited);
+    return inherited;
   };
 
   /**
@@ -382,6 +454,9 @@ export function createWatcher(deps: WatchDeps): Watcher {
         return;
       }
       if (cls.kind === "moved") {
+        // Only the moved session is re-evaluated: descendants keep their cached
+        // verdict on purpose, so an agent that cd'ed into a worktree does not
+        // lose its panes (see ownsParent).
         ownedParents.delete(cls.sessionID);
         return;
       }
