@@ -60,6 +60,16 @@ export function isSameProject(left: string, right: string): boolean {
   return a === b || a.startsWith(`${b}${sep}`) || b.startsWith(`${a}${sep}`);
 }
 
+/**
+ * True when `dir` is `canonical` itself or lies inside it. One-directional on
+ * purpose: the directory a session belongs to can never be answered by a
+ * project *nested inside* it (a vendored checkout, submodule or worktree under
+ * the same tree is a different project).
+ */
+function isSameOrInside(canonical: string, dir: string): boolean {
+  return canonical === dir || dir.startsWith(`${canonical}${sep}`);
+}
+
 export interface Watcher {
   adopt(): Promise<void>;
   dispatch(event: OpenCodeEvent): Promise<void>;
@@ -172,14 +182,23 @@ export function createWatcher(deps: WatchDeps): Watcher {
       try {
         const projects = await project.list();
         for (const dir of deps.projectDirectories ?? []) {
-          // Deepest match wins: a directory inside a repository must not also
-          // pull in a parent "project" (e.g. $HOME) that hosts unrelated work.
-          let best: (typeof projects)[number] | undefined;
+          // The session's project is the *deepest* project whose canonical path
+          // contains this directory. Projects nested inside it (a vendored
+          // checkout, a submodule, a `.core` dependency) must not win: they are
+          // a different project, and claiming their id would silently drop this
+          // instance's own sessions once they move out of the root.
+          const target = normalizeDirectory(dir);
+          let bestID: string | undefined;
+          let bestDepth = -1;
           for (const candidate of projects) {
-            if (!isSameProject(candidate.canonical, dir)) continue;
-            if (best === undefined || candidate.canonical.length > best.canonical.length) best = candidate;
+            const canonical = normalizeDirectory(candidate.canonical);
+            if (!isSameOrInside(canonical, target)) continue;
+            if (canonical.length > bestDepth) {
+              bestDepth = canonical.length;
+              bestID = candidate.id;
+            }
           }
-          if (best !== undefined) ids.add(best.id);
+          if (bestID !== undefined) ids.add(bestID);
         }
       } catch (error) {
         log(`scope project lookup failed: ${String(error)}`);

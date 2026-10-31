@@ -50,7 +50,7 @@ To use it as your default `opencode`:
 alias opencode="opencode-mux"
 ```
 
-(binaries are `opencode-mux`, version `1.3.1`)
+(binaries are `opencode-mux`, version `1.3.2`)
 
 ## Usage
 

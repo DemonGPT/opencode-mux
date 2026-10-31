@@ -2,7 +2,7 @@
 
 ## Project
 
-**opencode-mux** (npm `opencode-mux`, v1.3.1, MIT): a drop-in wrapper for
+**opencode-mux** (npm `opencode-mux`, v1.3.2, MIT): a drop-in wrapper for
 opencode v2 that opens tmux panes for subagent sessions automatically.
 Node >= 20, TypeScript, ESM (`"type": "module"`), built with `tsc`, tested
 with Vitest. No runtime framework. Package ships only `dist/`
@@ -101,13 +101,16 @@ with Vitest. No runtime framework. Package ships only `dist/`
      parent session belongs to its own project (`projectDirectories` =
      cwd + an explicit opencode `<directory>` arg). Ownership is decided by
      the session's **opencode project id** when the daemon exposes one
-     (`project.list`, deepest matching project per directory), because a
+     (`project.list`, deepest *ancestor* project per directory), because a
      session keeps its project binding across a `cd` into a worktree outside
      the project root — the binding is durable, the directory is not. The
      `isSameProject` directory check (equal or ancestor/descendant) remains the
      fallback for a missing project list or an unknown directory, and the
      parent chain is walked to its root so a session whose own directory
-     drifted out keeps printing panes. Verdicts are cached per session id
+     drifted out keeps printing panes. The match is **one-directional**: a
+     project nested *inside* the workspace (vendored checkout, submodule) must
+     never win it, or the instance silently loses its own sessions. Verdicts
+     are cached per session id
      (capped at 256, FIFO); `session.moved` invalidates only the moved entry —
      descendants keep theirs deliberately. Never reintroduce global
      watch-all: two instances would open panes for each other's subagents.
@@ -140,7 +143,7 @@ with Vitest. No runtime framework. Package ships only `dist/`
   the rest of the TUI's life. One subscription is active at a time, and an
   abort exits promptly. Without an explicit parent, only children of sessions
   in this project get panes (concurrent instances). Ownership is the session's
-  opencode project id (deepest `project.list` match per directory), with the
+  opencode project id (deepest *ancestor* `project.list` match per directory), with the
   `isSameProject` directory check as fallback and the parent chain walked to
   its root — a session whose directory drifted into an out-of-tree worktree is
   still ours. Lookups are cached per session id, capped at 256 entries;

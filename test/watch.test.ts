@@ -1122,6 +1122,29 @@ describe("createWatcher project scoping across directory drift", () => {
     expect(tmux.splits[0]!.argv).toContain("ses_b");
   });
 
+  it("does not let a project nested inside the workspace shadow it", async () => {
+    // duelspace/.core/edopro is a real opencode project nested inside the
+    // workspace: with symmetric containment it would win the "deepest match"
+    // and this instance would stop owning its own sessions after a move.
+    const tmux = makeTmux({ paneIds: ["%1"] });
+    const client = makeClient({
+      projects: [
+        { id: "home", canonical: "/home/me" },
+        { id: "proj", canonical: "/work/mine" },
+        { id: "vendored", canonical: "/work/mine/.core/dep" },
+      ],
+      parents: {
+        ses_vendored: sessionInfo("ses_vendored", undefined as unknown as string, "/elsewhere/wt", "vendored"),
+        ses_proj: sessionInfo("ses_proj", undefined as unknown as string, "/elsewhere/wt", "proj"),
+      },
+    });
+    const w = createWatcher(scoped({ tmux, client }));
+    await w.dispatch(created("ses_a", "ses_vendored"));
+    await w.dispatch(created("ses_b", "ses_proj"));
+    expect(tmux.splits).toHaveLength(1);
+    expect(tmux.splits[0]!.argv).toContain("ses_b");
+  });
+
   it("falls back to directory matching when the project list fails", async () => {
     const tmux = makeTmux({ paneIds: ["%1"] });
     const logs: string[] = [];
